@@ -45,6 +45,9 @@ dependencies = [
 [[package]]
 name = "arch_gen"
 version = "0.1.0"
+dependencies = [
+ "vm-memory 0.6.0",
+]
 
 [[package]]
 name = "atty"
@@ -401,6 +404,7 @@ dependencies = [
 name = "kernel"
 version = "0.1.0"
 dependencies = [
+ "arch_gen",
  "utils",
  "vm-memory 0.1.0",
 ]

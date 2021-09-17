@@ -11,6 +11,8 @@
  * 806276b7f07a39a1cc3f38bb1ef5c573d4594a38
  */
 
+use vm_memory_upstream::ByteValued;
+
 #[repr(C)]
 #[derive(Default)]
 pub struct __IncompleteArrayField<T>(::std::marker::PhantomData<T>);
@@ -2872,6 +2874,9 @@ pub struct setup_header {
     pub init_size: __u32,
     pub handover_offset: __u32,
 }
+
+unsafe impl ByteValued for setup_header {}
+
 #[test]
 fn bindgen_test_layout_setup_header() {
     assert_eq!(

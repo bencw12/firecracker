@@ -38,6 +38,8 @@ pub enum Error {
     SeekKernelStart,
     SeekKernelImage,
     SeekProgramHeader,
+    LinuxNot64Bit,
+    ReadLinuxHeader,
 }
 
 impl fmt::Display for Error {
@@ -59,12 +61,77 @@ impl fmt::Display for Error {
                 }
                 Error::SeekKernelImage => "Failed to seek to offset of kernel image",
                 Error::SeekProgramHeader => "Failed to seek to ELF program header",
+                Error::LinuxNot64Bit => "Kernel not 64 bit ELF",
+                Error::ReadLinuxHeader => "Failed to read bzImage header"
             }
         )
     }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+fn load_bzimage<F>(
+    guest_mem: &GuestMemoryMmap, 
+    kernel_image: &mut F,
+) -> Result<GuestAddress>
+where
+    F: Read + Seek
+{
+    const BZIMAGE_HEADER_OFFSET: u64 = 0x1f1;
+    const BZIMAGE_HEADER_MAGIC: u32 = 0x53726448;
+    const BZIMAGE_LOAD_ADDRESS: u64 = 0x100000;
+    const BZIMAGE_64BIT_ENTRY_ADDRESS: u64 = BZIMAGE_LOAD_ADDRESS + 0x200;
+
+    let mut header = arch_gen::x86::bootparam::setup_header::default();
+    kernel_image
+        .seek(SeekFrom::Start(BZIMAGE_HEADER_OFFSET))
+        .map_err(|_| Error::SeekKernelStart)?;
+
+    header.as_bytes()
+        .read_from(0, kernel_image, mem::size_of::<arch_gen::x86::bootparam::setup_header>())
+        .map_err(|_| Error::ReadKernelDataStruct("Failed to read bzImage header"))?;
+
+    /* 
+    unsafe {
+        // read_struct is safe when reading a POD struct.  It can be used and dropped without issue.
+        read_struct(kernel_image, &mut header).map_err(|_| Error::ReadLinuxHeader)?;
+    }
+    */
+    
+    if header.header != BZIMAGE_HEADER_MAGIC {
+        return Err(Error::InvalidElfMagicNumber);
+    }
+    if (header.xloadflags as u32 & arch_gen::x86::bootparam::XLF_KERNEL_64) == 0 {
+        return Err(Error::LinuxNot64Bit);
+    }
+
+    let load_bytes = header.syssize as usize * 16;
+    let load_offset = if header.setup_sects == 0 {
+        5 * 512
+    } else {
+        (header.setup_sects as u64 + 1) * 512
+    };
+
+    kernel_image
+        .seek(SeekFrom::Start(load_offset))
+        .map_err(|_| Error::SeekKernelStart)?;
+    guest_mem
+        .read_from(GuestAddress(BZIMAGE_LOAD_ADDRESS), kernel_image, load_bytes)
+        .map_err(|_| Error::ReadKernelImage)?;
+
+    Ok(GuestAddress(BZIMAGE_64BIT_ENTRY_ADDRESS))
+}
+
+pub fn load_kernel<F>(
+    guest_mem: &GuestMemoryMmap, 
+    kernel_image: &mut F, 
+    start_address: u64,
+) -> Result<GuestAddress>
+where
+    F: Read + Seek,
+{
+    load_bzimage(guest_mem, kernel_image).or_else(|_| load_elf64(guest_mem, kernel_image, start_address))
+}
 
 /// Loads a kernel from a vmlinux elf image to a slice
 ///
@@ -76,7 +143,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// Returns the entry address of the kernel.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub fn load_kernel<F>(
+pub fn load_elf64<F>(
     guest_mem: &GuestMemoryMmap,
     kernel_image: &mut F,
     start_address: u64,

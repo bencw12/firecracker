@@ -112,6 +112,8 @@ pub fn configure_system(
     const KERNEL_HDR_MAGIC: u32 = 0x5372_6448;
     const KERNEL_LOADER_OTHER: u8 = 0xff;
     const KERNEL_MIN_ALIGNMENT_BYTES: u32 = 0x0100_0000; // Must be non-zero.
+    //BCWH not sure what the implications of this are 
+    const KERNEL_INIT_SIZE: u32 = 0x0600_0000;
     let first_addr_past_32bits = GuestAddress(FIRST_ADDR_PAST_32BITS);
     let end_32bit_gap_start = GuestAddress(MMIO_MEM_START);
 
@@ -128,6 +130,7 @@ pub fn configure_system(
     params.0.hdr.cmd_line_ptr = cmdline_addr.raw_value() as u32;
     params.0.hdr.cmdline_size = cmdline_size as u32;
     params.0.hdr.kernel_alignment = KERNEL_MIN_ALIGNMENT_BYTES;
+    params.0.hdr.init_size = KERNEL_INIT_SIZE;
     if let Some(initrd_config) = initrd {
         params.0.hdr.ramdisk_image = initrd_config.address.raw_value() as u32;
         params.0.hdr.ramdisk_size = initrd_config.size as u32;
