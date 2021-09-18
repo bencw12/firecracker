@@ -29,3 +29,5 @@ pub const KVM_TSS_ADDRESS: u64 = 0xfffb_d000;
 
 /// The 'zero page', a.k.a linux kernel bootparams.
 pub const ZERO_PAGE_START: u64 = 0x7000;
+/// From __START_KERNEL_map in linux, first virtual address
+pub const __START_KERNEL_MAP: u64 = 0xFFFFFFFF80000000;

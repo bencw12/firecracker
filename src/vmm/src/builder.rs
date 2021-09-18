@@ -550,8 +550,10 @@ fn load_kernel(
         .try_clone()
         .map_err(|e| StartMicrovmError::Internal(Error::KernelFile(e)))?;
 
+    let relocs_file = &boot_config.relocs_file;
+
     let entry_addr =
-        kernel::loader::load_kernel(guest_memory, &mut kernel_file, arch::get_kernel_start())
+        kernel::loader::load_kernel(guest_memory, &mut kernel_file, relocs_file, arch::get_kernel_start())
             .map_err(StartMicrovmError::KernelLoader)?;
 
     Ok(entry_addr)

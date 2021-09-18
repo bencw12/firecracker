@@ -7,13 +7,20 @@
 
 //! Helper for loading a kernel image in the guest memory.
 
+extern crate rand;
+use rand::thread_rng;
+use rand::Rng;
+
 use std::ffi::CString;
 use std::fmt;
 use std::io::{Read, Seek, SeekFrom};
 use std::mem;
+use std::convert::{TryFrom, TryInto};
+use std::fs::File;
 
 use super::cmdline::Error as CmdlineError;
 use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
+use arch::x86_64::layout::__START_KERNEL_MAP;
 
 #[allow(non_camel_case_types)]
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -38,6 +45,7 @@ pub enum Error {
     SeekKernelStart,
     SeekKernelImage,
     SeekProgramHeader,
+    SeekRelocsFile, 
 }
 
 impl fmt::Display for Error {
@@ -59,12 +67,140 @@ impl fmt::Display for Error {
                 }
                 Error::SeekKernelImage => "Failed to seek to offset of kernel image",
                 Error::SeekProgramHeader => "Failed to seek to ELF program header",
+                Error::SeekRelocsFile => "KASLR: Failed to seek to offset of relocs file",
             }
         )
     }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+// DJW: this is caclulated the same as in arch/x86/boot/compressed/kaslr.c
+// phys is simplified from what linux does but experimentally should work
+pub fn rand_addr(img_size: u64, minimum: u64, maximum: u64, align: u64) -> std::io::Result<u64> {
+    let asize = (img_size + (align - 1)) - ((img_size + align - 1) % align);
+    let slots: u64 = (maximum - minimum - asize) / align + 1;
+    let randslot: u64 = thread_rng().gen_range(0, slots);
+
+    Ok((randslot * align) + minimum)
+}
+
+// do relocs for the virtual offset if a relocs file is provided
+fn handle_relocations(
+    guest_mem: &GuestMemoryMmap,
+    relocs_path: &Option<File>,
+    virt_offset: u32,
+    phys_offset: u32,
+) -> std::io::Result<()> {
+    
+    // BCWH: This is safe because we checked if None in load_kernel
+    let mut relocs_path = relocs_path.as_ref().unwrap();
+   
+    let img_size = relocs_path
+        .seek(SeekFrom::End(0))
+        .expect("Couldn't get relocs file length");
+
+    let mut p = (img_size - 4) as usize;
+
+    let mut contents = vec![0u8; img_size as usize];
+
+    relocs_path
+        .seek(SeekFrom::Start(0))
+        .expect("Couldn't seek to start of relocs file");
+
+    relocs_path
+        .read_exact(&mut contents)?;
+    // 32-bit 
+    loop {
+        let buf = contents[p..p+4].try_into().expect("Couldn't convert slice");
+
+        let reloc = i32::from_le_bytes(buf);
+        let mut extended = i64::from(reloc);
+
+        p -= 4;
+        if extended != 0 {
+            
+            extended -= __START_KERNEL_MAP as i64; 
+            extended += phys_offset as i64;
+            let ptr = GuestAddress(extended as u64);
+            let mut value_buf = [0u8; 4];
+
+            guest_mem
+                .read_slice(&mut value_buf, ptr)
+                .expect("Can't read 32-bit reloc");
+            let mut value = i32::from_le_bytes(value_buf) as i64;
+            value += virt_offset as i64;
+            let temp = value as u32;
+
+            guest_mem
+                .write(&temp.to_le_bytes() , ptr)
+                .expect("Can't write 32-bit reloc");
+        } else {
+            break;
+        }
+    }
+    // 32 bit inverse 
+    loop {
+        let buf = contents[p..p+4].try_into().expect("Couldn't convert slice");
+
+        let reloc = i32::from_le_bytes(buf);
+        let mut extended = i64::from(reloc);
+
+        p -= 4;
+        if extended != 0 {
+            
+            extended -= __START_KERNEL_MAP as i64;
+            extended += phys_offset as i64; 
+            let ptr = GuestAddress(extended as u64);
+            let mut value_buf = [0u8; 4];
+
+            guest_mem
+                .read_slice(&mut value_buf, ptr)
+                .expect("Can't read 32-bit inv reloc");
+            let mut value = i32::from_le_bytes(value_buf) as i64;
+            value -= virt_offset as i64;
+            let temp = value as u32;
+
+            guest_mem
+                .write(&temp.to_le_bytes() , ptr)
+                .expect("Can't write 32-bit inv reloc");
+        } else {
+            break;
+        }
+    }
+    // 64-bit
+    loop {
+        let buf = contents[p..p+4].try_into().expect("Couldn't convert slice");
+
+        let reloc = i32::from_le_bytes(buf);
+        let mut extended = i64::from(reloc);
+
+        if extended != 0 {
+            
+            extended -= __START_KERNEL_MAP as i64; 
+            extended += phys_offset as i64;
+            let ptr = GuestAddress(extended as u64);
+            let mut value_buf = [0u8; 8];
+
+            guest_mem
+                .read_slice(&mut value_buf, ptr)
+                .expect("Can't read 64-bit reloc");
+            let mut value = i64::from_le_bytes(value_buf) as i64;
+            value += virt_offset as i64;
+            let temp = value as u64;
+
+            guest_mem
+                .write(&temp.to_le_bytes() , ptr)
+                .expect("Can't write 64-bit reloc");
+        } else {
+            break;
+        }
+        p -= 4;
+    }
+
+    assert!(p == 0);
+    Ok(())
+}
 
 /// Loads a kernel from a vmlinux elf image to a slice
 ///
@@ -79,6 +215,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub fn load_kernel<F>(
     guest_mem: &GuestMemoryMmap,
     kernel_image: &mut F,
+    relocs_file: &Option<File>,
     start_address: u64,
 ) -> Result<GuestAddress>
 where
@@ -87,6 +224,36 @@ where
     kernel_image
         .seek(SeekFrom::Start(0))
         .map_err(|_| Error::SeekKernelImage)?;
+    let img_size = kernel_image
+        .seek(SeekFrom::End(0))
+        .map_err(|_| Error::SeekKernelImage)?;
+
+    kernel_image
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| Error::SeekKernelImage)?;
+
+    let (phys_offset, virt_offset, do_kaslr) = match relocs_file {
+        None => (0u64, 0u64, false),
+        _ => (
+            rand_addr(
+                img_size, 
+                0x0100_0000,
+                guest_mem.last_addr().raw_value(),
+                0x0100_0000,
+            )
+            .expect("Couldn't get physical KASLR offset")
+                - 0x0100_0000,
+            rand_addr(
+                img_size, 
+                0x0100_0000,
+                1024*1024*1024,
+                0x200_000,
+            )
+            .expect("Couldn't get virtual KASLR offset"),
+            true,
+        ),
+    };
+
     let mut ehdr = elf::Elf64_Ehdr::default();
     ehdr.as_bytes()
         .read_from(0, kernel_image, mem::size_of::<elf::Elf64_Ehdr>())
@@ -137,7 +304,7 @@ where
             .seek(SeekFrom::Start(phdr.p_offset))
             .map_err(|_| Error::SeekKernelStart)?;
 
-        let mem_offset = GuestAddress(phdr.p_paddr);
+        let mem_offset = GuestAddress(phdr.p_paddr + phys_offset);
         if mem_offset.raw_value() < start_address {
             return Err(Error::InvalidProgramHeaderAddress);
         }
@@ -145,6 +312,16 @@ where
         guest_mem
             .read_from(mem_offset, kernel_image, phdr.p_filesz as usize)
             .map_err(|_| Error::ReadKernelImage)?;
+    }
+
+    if do_kaslr {
+        handle_relocations(
+            guest_mem, 
+            relocs_file, 
+            u32::try_from(virt_offset).expect("Couldn't convert virtual offset from u64 to u32"),
+            u32::try_from(phys_offset).expect("Couldn't convert physical offset from u64 to u32"),
+        )
+        .expect("KASLR: Failed to handle relocations");
     }
 
     Ok(GuestAddress(ehdr.e_entry))
