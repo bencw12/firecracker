@@ -90,13 +90,6 @@ where
     header.as_bytes()
         .read_from(0, kernel_image, mem::size_of::<arch_gen::x86::bootparam::setup_header>())
         .map_err(|_| Error::ReadKernelDataStruct("Failed to read bzImage header"))?;
-
-    /* 
-    unsafe {
-        // read_struct is safe when reading a POD struct.  It can be used and dropped without issue.
-        read_struct(kernel_image, &mut header).map_err(|_| Error::ReadLinuxHeader)?;
-    }
-    */
     
     if header.header != BZIMAGE_HEADER_MAGIC {
         return Err(Error::InvalidElfMagicNumber);
