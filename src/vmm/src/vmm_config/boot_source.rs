@@ -33,6 +33,8 @@ pub struct BootSourceConfig {
     /// kernel command line is used: `reboot=k panic=1 pci=off nomodules 8250.nr_uarts=0`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub boot_args: Option<String>,
+    /// Path of the relocs file, if there is one. If provided KASLR will be done on uncompressed kernels
+    pub relocs_path: Option<String>, 
 }
 
 impl From<&BootConfig> for BootSourceConfig {
@@ -48,6 +50,8 @@ pub enum BootSourceConfigError {
     InvalidKernelPath(io::Error),
     /// The initrd file cannot be opened.
     InvalidInitrdPath(io::Error),
+    /// The relocs file cannot be opened.
+    InvalidRelocsPath(io::Error),
     /// The kernel command line is invalid.
     InvalidKernelCommandLine(String),
 }
@@ -63,9 +67,15 @@ impl Display for BootSourceConfigError {
                  invalid permissions. {}",
                 e,
             ),
+            InvalidRelocsPath(ref e) => write!(
+                f,
+                "The relocs file cannot be opened due to invalid path or \
+                 invalid permissions. {}",
+                e,
+            ),
             InvalidKernelCommandLine(ref e) => {
                 write!(f, "The kernel command line is invalid: {}", e.as_str())
-            }
+            },
         }
     }
 }
@@ -79,6 +89,8 @@ pub struct BootConfig {
     pub kernel_file: std::fs::File,
     /// The descriptor to the initrd file, if there is one.
     pub initrd_file: Option<std::fs::File>,
+    /// The descriptor to the relocs file, if there is one.
+    pub relocs_file: Option<std::fs::File>,
     /// The configuration above fields are based on.
     pub description: BootSourceConfig,
 }
@@ -87,13 +99,17 @@ impl BootConfig {
     /// Creates the BootConfig based on a given configuration.
     pub fn new(cfg: BootSourceConfig) -> std::result::Result<Self, BootSourceConfigError> {
         use self::BootSourceConfigError::{
-            InvalidInitrdPath, InvalidKernelCommandLine, InvalidKernelPath,
+            InvalidInitrdPath, InvalidKernelCommandLine, InvalidKernelPath, InvalidRelocsPath,
         };
 
         // Validate boot source config.
         let kernel_file = File::open(&cfg.kernel_image_path).map_err(InvalidKernelPath)?;
         let initrd_file: Option<File> = match &cfg.initrd_path {
             Some(path) => Some(File::open(path).map_err(InvalidInitrdPath)?),
+            None => None,
+        };
+        let relocs_file: Option<File> = match &cfg.relocs_path {
+            Some(path) => Some(File::open(path).map_err(InvalidRelocsPath)?),
             None => None,
         };
         let mut cmdline = kernel::cmdline::Cmdline::new(arch::CMDLINE_MAX_SIZE);
@@ -109,6 +125,7 @@ impl BootConfig {
             cmdline,
             kernel_file,
             initrd_file,
+            relocs_file, 
             // We can simply store original config since it doesn't support updates.
             description: cfg,
         })
