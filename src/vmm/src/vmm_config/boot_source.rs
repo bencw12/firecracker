@@ -34,7 +34,7 @@ pub struct BootSourceConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub boot_args: Option<String>,
     /// Path of the relocs file, if there is one. If provided KASLR will be done on uncompressed kernels
-    pub relocs_path: Option<String>, 
+    pub relocs_path: Option<String>,
 }
 
 impl From<&BootConfig> for BootSourceConfig {
@@ -75,7 +75,7 @@ impl Display for BootSourceConfigError {
             ),
             InvalidKernelCommandLine(ref e) => {
                 write!(f, "The kernel command line is invalid: {}", e.as_str())
-            },
+            }
         }
     }
 }
@@ -125,7 +125,7 @@ impl BootConfig {
             cmdline,
             kernel_file,
             initrd_file,
-            relocs_file, 
+            relocs_file,
             // We can simply store original config since it doesn't support updates.
             description: cfg,
         })
