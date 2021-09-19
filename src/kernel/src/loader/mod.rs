@@ -235,14 +235,7 @@ where
     let (phys_offset, virt_offset, do_kaslr) = match relocs_file {
         None => (0u64, 0u64, false),
         _ => (
-            rand_addr(
-                img_size, 
-                0x0100_0000,
-                guest_mem.last_addr().raw_value(),
-                0x0100_0000,
-            )
-            .expect("Couldn't get physical KASLR offset")
-                - 0x0100_0000,
+            0,
             rand_addr(
                 img_size, 
                 0x0100_0000,
