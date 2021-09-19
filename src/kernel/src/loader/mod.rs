@@ -26,6 +26,8 @@ use arch::x86_64::layout::__START_KERNEL_MAP;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 // Add here any other architecture that uses as kernel image an ELF file.
 mod elf;
+mod extable;
+mod fgkaslr;
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 unsafe impl ByteValued for elf::Elf64_Ehdr {}
@@ -46,6 +48,8 @@ pub enum Error {
     SeekKernelImage,
     SeekProgramHeader,
     SeekRelocsFile, 
+    ReadRelocsFile,
+    WriteGuestMemoryMmap,
 }
 
 impl fmt::Display for Error {
@@ -68,6 +72,8 @@ impl fmt::Display for Error {
                 Error::SeekKernelImage => "Failed to seek to offset of kernel image",
                 Error::SeekProgramHeader => "Failed to seek to ELF program header",
                 Error::SeekRelocsFile => "KASLR: Failed to seek to offset of relocs file",
+                Error::ReadRelocsFile => "Failed to read from relocs file",
+                Error::WriteGuestMemoryMmap => "BCWH: Failed to write bytes to guest memory",
             }
         )
     }
@@ -91,7 +97,10 @@ fn handle_relocations(
     relocs_path: &Option<File>,
     virt_offset: u32,
     phys_offset: u32,
-) -> std::io::Result<()> {
+    sections: &Vec<elf::Elf64_Shdr>,
+    sections_size: usize,
+    offsets: &Vec<i64>,
+) -> Result<()> {
     
     // BCWH: This is safe because we checked if None in load_kernel
     let mut relocs_path = relocs_path.as_ref().unwrap();
@@ -109,31 +118,38 @@ fn handle_relocations(
         .expect("Couldn't seek to start of relocs file");
 
     relocs_path
-        .read_exact(&mut contents)?;
+        .read_exact(&mut contents)
+        .map_err(|_| Error::ReadRelocsFile)?;
     // 32-bit 
     loop {
-        let buf = contents[p..p+4].try_into().expect("Couldn't convert slice");
+        let buf = contents[p..p+4]
+            .try_into()
+            .expect("Couldn't convert slice");
 
         let reloc = i32::from_le_bytes(buf);
         let mut extended = i64::from(reloc);
 
         p -= 4;
         if extended != 0 {
+            fgkaslr::adjust_address(&mut extended, sections, sections_size, offsets);
             
             extended -= __START_KERNEL_MAP as i64; 
             extended += phys_offset as i64;
             let ptr = GuestAddress(extended as u64);
-            let mut value_buf = [0u8; 4];
+            let value_buf = &mut [0u8; 4];
 
             guest_mem
-                .read_slice(&mut value_buf, ptr)
+                .read_slice(value_buf, ptr)
                 .expect("Can't read 32-bit reloc");
-            let mut value = i32::from_le_bytes(value_buf) as i64;
+            let mut value = i32::from_le_bytes(*value_buf) as i64;
+
+            fgkaslr::adjust_address(&mut value, sections, sections_size, offsets);
+
             value += virt_offset as i64;
             let temp = value as u32;
 
             guest_mem
-                .write(&temp.to_le_bytes() , ptr)
+                .write(&temp.to_le_bytes(), ptr)
                 .expect("Can't write 32-bit reloc");
         } else {
             break;
@@ -141,26 +157,45 @@ fn handle_relocations(
     }
     // 32 bit inverse 
     loop {
-        let buf = contents[p..p+4].try_into().expect("Couldn't convert slice");
+        let buf = contents[p..p+4]
+            .try_into()
+            .expect("Couldn't convert slice");
 
-        let reloc = i32::from_le_bytes(buf);
-        let mut extended = i64::from(reloc);
+        let mut extended = i32::from_le_bytes(buf) as i64;
+        let reloc = i32::from_le_bytes(buf) as i64;
 
         p -= 4;
         if extended != 0 {
+            let idx = 
+                fgkaslr::adjust_address(&mut extended, sections, sections_size, offsets);
             
             extended -= __START_KERNEL_MAP as i64;
             extended += phys_offset as i64; 
             let ptr = GuestAddress(extended as u64);
-            let mut value_buf = [0u8; 4];
+            let value_buf = &mut [0u8; 4];
 
             guest_mem
-                .read_slice(&mut value_buf, ptr)
+                .read_slice(value_buf, ptr)
                 .expect("Can't read 32-bit inv reloc");
-            let mut value = i32::from_le_bytes(value_buf) as i64;
-            value -= virt_offset as i64;
-            let temp = value as u32;
+            let mut value = i32::from_le_bytes(*value_buf) as i64;
+            let oldvalue = value;
 
+            fgkaslr::adjust_relative_offset(
+                reloc, 
+                &mut value, 
+                sections, 
+                sections_size,
+                offsets,
+                idx,
+            )?;
+
+            if fgkaslr::is_percpu_addr(
+                reloc, 
+                oldvalue, 
+            ) {
+                value -= virt_offset as i64;
+            }
+            let temp = value as u32;
             guest_mem
                 .write(&temp.to_le_bytes() , ptr)
                 .expect("Can't write 32-bit inv reloc");
@@ -170,27 +205,43 @@ fn handle_relocations(
     }
     // 64-bit
     loop {
-        let buf = contents[p..p+4].try_into().expect("Couldn't convert slice");
+        let buf = contents[p..p+4]
+            .try_into()
+            .expect("Couldn't convert slice");
 
-        let reloc = i32::from_le_bytes(buf);
-        let mut extended = i64::from(reloc);
+        let mut extended = i32::from_le_bytes(buf) as i64;
 
         if extended != 0 {
+            fgkaslr::adjust_address(
+                &mut extended,
+                sections, 
+                sections_size,
+                offsets,
+            );
             
             extended -= __START_KERNEL_MAP as i64; 
             extended += phys_offset as i64;
             let ptr = GuestAddress(extended as u64);
-            let mut value_buf = [0u8; 8];
+            let value_buf = &mut [0u8; 8];
 
             guest_mem
-                .read_slice(&mut value_buf, ptr)
+                .read_slice(value_buf, ptr)
                 .expect("Can't read 64-bit reloc");
-            let mut value = i64::from_le_bytes(value_buf) as i64;
-            value += virt_offset as i64;
+            let mut value = i64::from_le_bytes(*value_buf);
+
+            fgkaslr::adjust_address(
+                &mut value,
+                sections,
+                sections_size,
+                offsets,
+            );
+
+            value += 
+                i64::try_from(virt_offset).expect("Couldn't convert virt_offset from u32 to i64");
             let temp = value as u64;
 
             guest_mem
-                .write(&temp.to_le_bytes() , ptr)
+                .write(&temp.to_le_bytes(), ptr)
                 .expect("Can't write 64-bit reloc");
         } else {
             break;
@@ -199,6 +250,38 @@ fn handle_relocations(
     }
 
     assert!(p == 0);
+    Ok(())
+}
+
+fn layout_image<F>(
+    guest_mem: &GuestMemoryMmap,
+    kernel_image: &mut F,
+    start_address: u64,
+    phdrs: &Vec<elf::Elf64_Phdr>,
+    phys_offset: u64,
+) -> Result<()>
+where
+    F: Read + Seek,
+{
+    for phdr in phdrs {
+        if (phdr.p_type & elf::PT_LOAD) == 0 || phdr.p_filesz == 0 {
+            continue;
+        }
+
+        kernel_image
+            .seek(SeekFrom::Start(phdr.p_offset))
+            .map_err(|_| Error::SeekKernelStart)?;
+
+        let mem_offset = GuestAddress(phdr.p_paddr + phys_offset);
+        if mem_offset.raw_value() < start_address {
+            return Err(Error::InvalidProgramHeaderAddress);
+        }
+
+        guest_mem
+            .read_from(mem_offset, kernel_image, phdr.p_filesz as usize)
+            .map_err(|_| Error::ReadKernelImage)?;
+    }
+
     Ok(())
 }
 
@@ -228,10 +311,6 @@ where
         .seek(SeekFrom::End(0))
         .map_err(|_| Error::SeekKernelImage)?;
 
-    kernel_image
-        .seek(SeekFrom::Start(0))
-        .map_err(|_| Error::SeekKernelImage)?;
-
     let (phys_offset, virt_offset, do_kaslr) = match relocs_file {
         None => (0u64, 0u64, false),
         _ => (
@@ -253,6 +332,12 @@ where
             true,
         ),
     };
+
+    let phys_offset = 0;
+
+    kernel_image
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| Error::SeekKernelImage)?;
 
     let mut ehdr = elf::Elf64_Ehdr::default();
     ehdr.as_bytes()
@@ -315,13 +400,47 @@ where
     }
 
     if do_kaslr {
+        let mut sections: Vec<elf::Elf64_Shdr> = Vec::new();
+        let mut sections_size: usize = 0;
+        let mut offsets: Vec<i64> = Vec::new();
+
+        fgkaslr::layout_randomized_image(
+            &guest_mem,
+            kernel_image,
+            start_address,
+            &ehdr,
+            &phdrs,
+            &mut sections,
+            &mut sections_size,
+            &mut offsets,
+            phys_offset,
+        )?;
+
         handle_relocations(
             guest_mem, 
             relocs_file, 
             u32::try_from(virt_offset).expect("Couldn't convert virtual offset from u64 to u32"),
             u32::try_from(phys_offset).expect("Couldn't convert physical offset from u64 to u32"),
-        )
-        .expect("KASLR: Failed to handle relocations");
+            &sections, 
+            sections_size,
+            &mut offsets, 
+        )?;
+
+        fgkaslr::post_relocations_cleanup(
+            &guest_mem, 
+            &sections,
+            sections_size,
+            &mut offsets,
+            phys_offset,
+        )?;
+    } else {
+        layout_image(
+            &guest_mem, 
+            kernel_image, 
+            start_address, 
+            &phdrs,
+            phys_offset,
+        )?;
     }
 
     Ok(GuestAddress(ehdr.e_entry))
