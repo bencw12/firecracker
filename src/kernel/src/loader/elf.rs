@@ -85,6 +85,59 @@ impl Clone for elf64_phdr {
 }
 pub type Elf64_Phdr = elf64_phdr;
 
+/* sh_type */
+pub const SHN_UNDEF: ::std::os::raw::c_uint = 0;
+pub const SHN_XINDEX: ::std::os::raw::c_uint = 0xffff;
+pub const SHT_SYMTAB: ::std::os::raw::c_uint = 2;
+pub const SHT_STRTAB: ::std::os::raw::c_uint = 3;
+
+/* sh_flags */
+pub const SHF_ALLOC: ::std::os::raw::c_uint = 0x2;
+pub const SHF_EXECINSTR: std::os::raw::c_uint = 0x4;
+
+// BCWH Add elf section header struct
+#[repr(C)]
+#[derive(Debug, Default, Copy, PartialEq)]
+pub struct elf64_shdr {
+    pub sh_name: Elf64_Word,
+    pub sh_type: Elf64_Word,
+    pub sh_flags: Elf64_Xword,
+    pub sh_addr: Elf64_Addr,
+    pub sh_offset: Elf64_Off,
+    pub sh_size: Elf64_Xword,
+    pub sh_link: Elf64_Word,
+    pub sh_info: Elf64_Word,
+    pub sh_addralign: Elf64_Xword,
+    pub sh_entsize: Elf64_Xword,
+}
+
+impl Clone for elf64_shdr {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+pub type Elf64_Shdr = elf64_shdr;
+
+#[repr(C)]
+#[derive(Debug, Default, Copy)]
+pub struct elf64_sym {
+    pub st_name: Elf64_Word,
+    pub st_info: __u8,
+    pub st_other: __u8,
+    pub st_shndx: Elf64_Half,
+    pub st_value: Elf64_Addr,
+    pub st_size: Elf64_Xword,
+}
+
+impl Clone for elf64_sym {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+pub type Elf64_Sym = elf64_sym;
+
 #[cfg(test)]
 mod tests {
     use super::*;
