@@ -314,14 +314,7 @@ where
     let (phys_offset, virt_offset, do_kaslr) = match relocs_file {
         None => (0u64, 0u64, false),
         _ => (
-            rand_addr(
-                img_size, 
-                0x0100_0000,
-                guest_mem.last_addr().raw_value(),
-                0x0100_0000,
-            )
-            .expect("Couldn't get physical KASLR offset")
-                - 0x0100_0000,
+            0,
             rand_addr(
                 img_size, 
                 0x0100_0000,
@@ -332,8 +325,6 @@ where
             true,
         ),
     };
-
-    let phys_offset = 0;
 
     kernel_image
         .seek(SeekFrom::Start(0))
@@ -389,7 +380,7 @@ where
             .seek(SeekFrom::Start(phdr.p_offset))
             .map_err(|_| Error::SeekKernelStart)?;
 
-        let mem_offset = GuestAddress(phdr.p_paddr + phys_offset);
+        let mem_offset = GuestAddress(phdr.p_paddr);
         if mem_offset.raw_value() < start_address {
             return Err(Error::InvalidProgramHeaderAddress);
         }
