@@ -21,6 +21,8 @@ use std::fs::File;
 use super::cmdline::Error as CmdlineError;
 use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 use arch::x86_64::layout::__START_KERNEL_MAP;
+use utils::time::TimestampUs;
+use logger::info;
 
 #[allow(non_camel_case_types)]
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -304,6 +306,9 @@ pub fn load_kernel<F>(
 where
     F: Read + Seek,
 {
+
+    let parse_elf_time = TimestampUs::default().time_us;
+
     kernel_image
         .seek(SeekFrom::Start(0))
         .map_err(|_| Error::SeekKernelImage)?;
@@ -325,7 +330,7 @@ where
             true,
         ),
     };
-
+    
     kernel_image
         .seek(SeekFrom::Start(0))
         .map_err(|_| Error::SeekKernelImage)?;
@@ -406,6 +411,12 @@ where
             &mut offsets,
             phys_offset,
         )?;
+        let parse_elf_time = TimestampUs::default().time_us - parse_elf_time;
+
+        info!("parse_elf: {}", parse_elf_time);
+
+
+        let relocs_time = TimestampUs::default().time_us;
 
         handle_relocations(
             guest_mem, 
@@ -416,6 +427,10 @@ where
             sections_size,
             &mut offsets, 
         )?;
+        let relocs_time = TimestampUs::default().time_us - relocs_time;
+        info!("handle_relocations: {}", relocs_time);
+
+        let post_relocs_time = TimestampUs::default().time_us;
 
         fgkaslr::post_relocations_cleanup(
             &guest_mem, 
@@ -424,6 +439,9 @@ where
             &mut offsets,
             phys_offset,
         )?;
+
+        let post_relocs_time = TimestampUs::default().time_us - post_relocs_time;
+        info!("post_relocations_cleanup: {}", post_relocs_time);
     } else {
         layout_image(
             &guest_mem, 

@@ -5,7 +5,10 @@ edition = "2018"
 
 [dependencies]
 vm-memory = { path = "../vm-memory" }
-utils = { path = "../utils" }
 arch = { path = "../arch" }
+devices = { path = "../devices" }
+utils = { path = "../utils" }
+logger = { path = "../logger" }
 rand = "0.7.3"
+
 

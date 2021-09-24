@@ -413,6 +413,8 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "arch",
+ "devices",
+ "logger",
  "rand 0.7.3",
  "utils",
  "vm-memory 0.1.0",
