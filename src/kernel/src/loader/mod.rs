@@ -14,6 +14,8 @@ use std::mem;
 
 use super::cmdline::Error as CmdlineError;
 use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
+use utils::time::TimestampUs;
+use logger::info;
 
 #[allow(non_camel_case_types)]
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -84,6 +86,9 @@ pub fn load_kernel<F>(
 where
     F: Read + Seek,
 {
+
+    let parse_elf_time = TimestampUs::default().time_us;
+
     kernel_image
         .seek(SeekFrom::Start(0))
         .map_err(|_| Error::SeekKernelImage)?;
@@ -146,6 +151,9 @@ where
             .read_from(mem_offset, kernel_image, phdr.p_filesz as usize)
             .map_err(|_| Error::ReadKernelImage)?;
     }
+
+    let parse_elf_time = TimestampUs::default().time_us - parse_elf_time;
+    info!("parse_elf: {}", parse_elf_time);
 
     Ok(GuestAddress(ehdr.e_entry))
 }

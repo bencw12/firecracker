@@ -401,6 +401,7 @@ dependencies = [
 name = "kernel"
 version = "0.1.0"
 dependencies = [
+ "logger",
  "utils",
  "vm-memory 0.1.0",
 ]
