@@ -21,6 +21,8 @@ use std::fs::File;
 use super::cmdline::Error as CmdlineError;
 use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 use arch::x86_64::layout::__START_KERNEL_MAP;
+use utils::time::TimestampUs;
+use logger::info;
 
 #[allow(non_camel_case_types)]
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -221,6 +223,9 @@ pub fn load_kernel<F>(
 where
     F: Read + Seek,
 {
+
+    let parse_elf_time = TimestampUs::default().time_us;
+
     kernel_image
         .seek(SeekFrom::Start(0))
         .map_err(|_| Error::SeekKernelImage)?;
@@ -307,6 +312,9 @@ where
             .map_err(|_| Error::ReadKernelImage)?;
     }
 
+    let parse_elf_time = TimestampUs::default().time_us - parse_elf_time;
+    info!("parse_elf: {}", parse_elf_time);
+    let relocs_time = TimestampUs::default().time_us;
     if do_kaslr {
         handle_relocations(
             guest_mem, 
@@ -316,6 +324,8 @@ where
         )
         .expect("KASLR: Failed to handle relocations");
     }
+    let relocs_time = TimestampUs::default().time_us - relocs_time;
+    info!("handle_relocations: {}", relocs_time);
 
     Ok(GuestAddress(ehdr.e_entry))
 }

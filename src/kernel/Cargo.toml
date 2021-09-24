@@ -8,4 +8,5 @@ vm-memory = { path = "../vm-memory" }
 utils = { path = "../utils" }
 arch = { path = "../arch" }
 rand = "0.7.3"
+logger = { path = "../logger" }
 
