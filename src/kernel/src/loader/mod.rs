@@ -316,6 +316,8 @@ where
         .seek(SeekFrom::End(0))
         .map_err(|_| Error::SeekKernelImage)?;
 
+    let rando_time = TimestampUs::default().time_us;
+
     let (phys_offset, virt_offset, do_kaslr) = match relocs_file {
         None => (0u64, 0u64, false),
         _ => (
@@ -396,8 +398,6 @@ where
     }
 
     if do_kaslr {
-
-        let rando_time = TimestampUs::default().time_us;
 
         let mut sections: Vec<elf::Elf64_Shdr> = Vec::new();
         let mut sections_size: usize = 0;
