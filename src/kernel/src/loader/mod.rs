@@ -396,9 +396,13 @@ where
     }
 
     if do_kaslr {
+
+        let rando_time = TimestampUs::default().time_us;
+
         let mut sections: Vec<elf::Elf64_Shdr> = Vec::new();
         let mut sections_size: usize = 0;
         let mut offsets: Vec<i64> = Vec::new();
+
 
         fgkaslr::layout_randomized_image(
             &guest_mem,
@@ -439,6 +443,9 @@ where
             &mut offsets,
             phys_offset,
         )?;
+
+        let rando_time = TimestampUs::default().time_us - rando_time;
+        info!("in-monitor-randomization: {}", rando_time);
 
         let post_relocs_time = TimestampUs::default().time_us - post_relocs_time;
         info!("post_relocations_cleanup: {}", post_relocs_time);
