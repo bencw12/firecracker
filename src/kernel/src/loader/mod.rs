@@ -360,27 +360,6 @@ where
         phdrs.push(phdr);
     }
 
-    // Read in each section pointed to by the program headers.
-    /*
-    for phdr in &phdrs {
-        if (phdr.p_type & elf::PT_LOAD) == 0 || phdr.p_filesz == 0 {
-            continue;
-        }
-
-        kernel_image
-            .seek(SeekFrom::Start(phdr.p_offset))
-            .map_err(|_| Error::SeekKernelStart)?;
-
-        let mem_offset = GuestAddress(phdr.p_paddr);
-        if mem_offset.raw_value() < start_address {
-            return Err(Error::InvalidProgramHeaderAddress);
-        }
-
-        guest_mem
-            .read_from(mem_offset, kernel_image, phdr.p_filesz as usize)
-            .map_err(|_| Error::ReadKernelImage)?;
-    }*/
-
     let rando_time = TimestampUs::default().time_us;
 
     let (phys_offset, virt_offset, do_kaslr) = match relocs_file {
