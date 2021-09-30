@@ -315,23 +315,6 @@ where
     let img_size = kernel_image
         .seek(SeekFrom::End(0))
         .map_err(|_| Error::SeekKernelImage)?;
-
-    let rando_time = TimestampUs::default().time_us;
-
-    let (phys_offset, virt_offset, do_kaslr) = match relocs_file {
-        None => (0u64, 0u64, false),
-        _ => (
-            0,
-            rand_addr(
-                img_size, 
-                0x0100_0000,
-                1024*1024*1024,
-                0x200_000,
-            )
-            .expect("Couldn't get virtual KASLR offset"),
-            true,
-        ),
-    };
     
     kernel_image
         .seek(SeekFrom::Start(0))
@@ -378,6 +361,7 @@ where
     }
 
     // Read in each section pointed to by the program headers.
+    /*
     for phdr in &phdrs {
         if (phdr.p_type & elf::PT_LOAD) == 0 || phdr.p_filesz == 0 {
             continue;
@@ -395,7 +379,24 @@ where
         guest_mem
             .read_from(mem_offset, kernel_image, phdr.p_filesz as usize)
             .map_err(|_| Error::ReadKernelImage)?;
-    }
+    }*/
+
+    let rando_time = TimestampUs::default().time_us;
+
+    let (phys_offset, virt_offset, do_kaslr) = match relocs_file {
+        None => (0u64, 0u64, false),
+        _ => (
+            0,
+            rand_addr(
+                img_size, 
+                0x0100_0000,
+                1024*1024*1024,
+                0x200_000,
+            )
+            .expect("Couldn't get virtual KASLR offset"),
+            true,
+        ),
+    };
 
     if do_kaslr {
 
