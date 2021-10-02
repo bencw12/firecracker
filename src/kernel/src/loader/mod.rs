@@ -79,7 +79,7 @@ where
 {
     const BZIMAGE_HEADER_OFFSET: u64 = 0x1f1;
     const BZIMAGE_HEADER_MAGIC: u32 = 0x53726448;
-    const BZIMAGE_LOAD_ADDRESS: u64 = 0x100000;
+    const BZIMAGE_LOAD_ADDRESS: u64 = 0x1000000;
     const BZIMAGE_64BIT_ENTRY_ADDRESS: u64 = BZIMAGE_LOAD_ADDRESS + 0x200;
 
     let mut header = arch_gen::x86::bootparam::setup_header::default();
