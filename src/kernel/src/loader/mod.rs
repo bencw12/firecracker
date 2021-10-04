@@ -240,7 +240,14 @@ where
     let (phys_offset, virt_offset, do_kaslr) = match relocs_file {
         None => (0u64, 0u64, false),
         _ => (
-            0,
+            rand_addr(
+                img_size, 
+                0x0100_0000,
+                guest_mem.last_addr().raw_value(),
+                0x0100_0000,
+            )
+            .expect("Couldn't get physical KASLR offset")
+                - 0x0100_0000,
             rand_addr(
                 img_size, 
                 0x0100_0000,
@@ -327,7 +334,7 @@ where
     let relocs_time = TimestampUs::default().time_us - relocs_time;
     info!("handle_relocations: {}", relocs_time);
 
-    Ok(GuestAddress(ehdr.e_entry))
+    Ok(GuestAddress(ehdr.e_entry + phys_offset))
 }
 
 #[cfg(target_arch = "aarch64")]
