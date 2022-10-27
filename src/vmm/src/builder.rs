@@ -90,6 +90,8 @@ pub enum StartMicrovmError {
     OpenBlockDevice(io::Error),
     /// Cannot initialize a MMIO Device or add a device to the MMIO Bus or cmdline.
     RegisterMmioDevice(device_manager::mmio::Error),
+    /// Cannot initialize a PIO Device
+    RegisterPioDevice(devices::BusError),
     /// Cannot restore microvm state.
     RestoreMicrovmState(MicrovmStateError),
     /// Unable to set VmResources.
@@ -171,6 +173,16 @@ impl Display for StartMicrovmError {
                 write!(
                     f,
                     "Cannot initialize a MMIO Device or add a device to the MMIO Bus or cmdline. \
+                     {}",
+                    err_msg
+                )
+            }
+            RegisterPioDevice(err) => {
+                let mut err_msg = format!("{:?}", err);
+                err_msg = err_msg.replace('\"', "");
+                write!(
+                    f,
+                    "Cannot initialize a PIO Device or add a device to the PIO Bus. \
                      {}",
                     err_msg
                 )
@@ -325,6 +337,7 @@ pub fn build_microvm_for_boot(
 
     // Timestamp for measuring microVM boot duration.
     let request_ts = TimestampUs::default();
+    let t_init = TimestampUs::default();
 
     let boot_config = vm_resources
         .boot_source_builder()
@@ -354,6 +367,7 @@ pub fn build_microvm_for_boot(
     // and tests.
     if vm_resources.boot_timer {
         attach_boot_timer_device(&mut vmm, request_ts)?;
+        attach_debug_port_device(&mut vmm, t_init)?;
     }
 
     if let Some(balloon) = vm_resources.balloon.get() {
@@ -932,6 +946,20 @@ pub(crate) fn attach_boot_timer_device(
         .register_mmio_boot_timer(boot_timer)
         .map_err(RegisterMmioDevice)?;
 
+    Ok(())
+}
+
+pub(crate) fn attach_debug_port_device(
+    vmm: &mut Vmm,
+    t_init: TimestampUs,
+) -> std::result::Result<(), StartMicrovmError> {
+    use self::StartMicrovmError::*;
+
+    let debug_port = Arc::new(Mutex::new(devices::pseudo::DebugPort::new(t_init)));
+
+    vmm.pio_device_manager
+        .io_bus.insert(debug_port, 0x80, 0x1)
+        .map_err(RegisterPioDevice)?;
     Ok(())
 }
 
