@@ -6,6 +6,7 @@
 // found in the THIRD-PARTY file.
 
 use std::fmt::Formatter;
+use std::sync::Arc;
 use std::{fmt, result};
 
 #[cfg(target_arch = "aarch64")]
@@ -18,6 +19,7 @@ use kvm_bindings::{
     KVM_CLOCK_TSC_STABLE, KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
     KVM_MAX_CPUID_ENTRIES, KVM_PIT_SPEAKER_DUMMY,
 };
+#[cfg(target_arch = "x86_64")]
 use kvm_bindings::{kvm_userspace_memory_region, KVM_MEM_LOG_DIRTY_PAGES};
 use kvm_ioctls::{Kvm, VmFd};
 use versionize::{VersionMap, Versionize, VersionizeResult};
@@ -138,14 +140,13 @@ pub type Result<T> = result::Result<T, Error>;
 
 /// A wrapper around creating and using a VM.
 pub struct Vm {
-    fd: VmFd,
+    fd: Arc<VmFd>,
 
     // X86 specific fields.
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     supported_cpuid: CpuId,
     #[cfg(target_arch = "x86_64")]
     supported_msrs: MsrList,
-
     // Arm specific fields.
     // On aarch64 we need to keep around the fd obtained by creating the VGIC device.
     #[cfg(target_arch = "aarch64")]
@@ -156,7 +157,7 @@ impl Vm {
     /// Constructs a new `Vm` using the given `Kvm` instance.
     pub fn new(kvm: &Kvm) -> Result<Self> {
         // Create fd for interacting with kvm-vm specific functions.
-        let vm_fd = kvm.create_vm().map_err(Error::VmFd)?;
+        let vm_fd = Arc::new(kvm.create_vm().map_err(Error::VmFd)?);
 
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         let supported_cpuid = kvm
@@ -241,8 +242,8 @@ impl Vm {
     }
 
     /// Gets a reference to the kvm file descriptor owned by this VM.
-    pub fn fd(&self) -> &VmFd {
-        &self.fd
+    pub fn fd(&self) -> Arc<VmFd> {
+        self.fd.clone()
     }
 
     #[cfg(target_arch = "x86_64")]

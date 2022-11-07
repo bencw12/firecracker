@@ -39,6 +39,7 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::time::Duration;
 use std::{fmt, io};
 
+use arch::x86_64::sev::Sev;
 use arch::DeviceType;
 use devices::legacy::serial::{IER_RDA_BIT, IER_RDA_OFFSET};
 use devices::virtio::balloon::Error as BalloonError;
@@ -127,6 +128,14 @@ pub enum Error {
     #[cfg(target_arch = "x86_64")]
     #[error("Error creating legacy device: {0}")]
     CreateLegacyDevice(device_manager::legacy::Error),
+    /// Error setting up SEV
+    #[cfg(target_arch = "x86_64")]
+    #[error("Error setting up SEV boot: {0}")]
+    SevSetup(arch::x86_64::sev::SevError),
+    /// Error finishing up SEV
+    #[cfg(target_arch = "x86_64")]
+    #[error("Error finishihng SEV boot: {0}")]
+    SevFinish(arch::x86_64::sev::SevError),
     /// Device manager error.
     #[error("{0}")]
     DeviceManager(device_manager::mmio::Error),
@@ -298,6 +307,9 @@ pub struct Vmm {
     mmio_device_manager: MMIODeviceManager,
     #[cfg(target_arch = "x86_64")]
     pio_device_manager: PortIODeviceManager,
+
+    #[cfg(target_arch = "x86_64")]
+    sev: Option<Sev>,
 }
 
 impl Vmm {
@@ -628,6 +640,27 @@ impl Vmm {
                 Ok(())
             })
             .map_err(Error::DeviceManager)
+    }
+
+    /// Initializes SEV
+    pub fn setup_sev(&mut self, path: &String) -> Result<()> {
+        if let Some(sev) = self.sev.as_mut() {
+            // sev.sev_init().map_err(|err| Error::SevSetup(err))?;
+            sev.load_firmware(path, &self.guest_memory)
+                .map_err(|err| Error::SevSetup(err))?;
+        }
+        Ok(())
+    }
+
+    /// Finishes SEV boot
+    pub fn finish_sev(&mut self) -> Result<()> {
+        if let Some(sev) = self.sev.as_mut() {
+            sev.get_launch_measurement()
+                .map_err(|err| Error::SevFinish(err))?;
+            sev.sev_launch_finish()
+                .map_err(|err| Error::SevFinish(err))?;
+        }
+        Ok(())
     }
 
     /// Returns a reference to the balloon device if present.

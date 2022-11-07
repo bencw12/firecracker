@@ -5,7 +5,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
-use std::io::Error as IoError;
+use std::io::{self, Error as IoError};
 use std::os::unix::io::AsRawFd;
 
 use vm_memory_upstream::bitmap::AtomicBitmap;
@@ -63,6 +63,30 @@ fn build_guarded_region(
 
     if guard_addr == libc::MAP_FAILED {
         return Err(MmapRegionError::Mmap(IoError::last_os_error()));
+    }
+
+    //TEMPORARY - will be config option
+    //hugepages gives huge performance boost during SEV PSP measurement
+    let hugepage = true;
+
+    if hugepage {
+        let ret = unsafe {
+            libc::madvise(
+                guard_addr,
+                guarded_size as libc::size_t,
+                libc::MADV_HUGEPAGE,
+            )
+        };
+        if ret != 0 {
+            let err = io::Error::last_os_error();
+            let errno = err.raw_os_error().unwrap();
+            if errno == libc::EINVAL {
+                println!("kernel not configured with CONFIG_TRANSPARENT_HUGEPAGE");
+            } else {
+                println!("madvise error: {}", err);
+            }
+            println!("failed to back memory region with huge pages");
+        }
     }
 
     let (fd, offset) = match maybe_file_offset {

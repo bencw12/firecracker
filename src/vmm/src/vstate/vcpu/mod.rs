@@ -923,6 +923,7 @@ mod tests {
                     entry_addr,
                     &vcpu_config,
                     _vm.supported_cpuid().clone(),
+                    false,
                 )
                 .expect("failed to configure vcpu");
         }

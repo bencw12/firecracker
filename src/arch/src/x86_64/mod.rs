@@ -15,6 +15,8 @@ mod mptable;
 pub mod msr;
 /// Logic for configuring x86_64 registers.
 pub mod regs;
+/// Logic for SEV
+pub mod sev;
 
 use linux_loader::configurator::linux::LinuxBootConfigurator;
 use linux_loader::configurator::{BootConfigurator, BootParams};
@@ -22,6 +24,8 @@ use linux_loader::loader::bootparam::boot_params;
 use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 
 use crate::InitrdConfig;
+
+use self::sev::Sev;
 
 // Value taken from https://elixir.bootlin.com/linux/v5.10.68/source/arch/x86/include/uapi/asm/e820.h#L31
 const E820_RAM: u32 = 1;
@@ -98,6 +102,7 @@ pub fn initrd_load_addr(guest_mem: &GuestMemoryMmap, initrd_size: usize) -> supe
 /// * `initrd` - Information about where the ramdisk image was loaded in the `guest_mem`.
 /// * `num_cpus` - Number of virtual CPUs the guest will have.
 pub fn configure_system(
+    sev: &mut Option<Sev>,
     guest_mem: &GuestMemoryMmap,
     cmdline_addr: GuestAddress,
     cmdline_size: usize,
@@ -114,60 +119,65 @@ pub fn configure_system(
     let himem_start = GuestAddress(layout::HIMEM_START);
 
     // Note that this puts the mptable at the last 1k of Linux's 640k base RAM
-    mptable::setup_mptable(guest_mem, num_cpus)?;
+    mptable::setup_mptable(guest_mem, num_cpus, sev)?;
 
-    let mut params = boot_params::default();
+    //Don't need bootparams if using SEV
+    if sev.is_none() {
+        let mut params = boot_params::default();
 
-    params.hdr.type_of_loader = KERNEL_LOADER_OTHER;
-    params.hdr.boot_flag = KERNEL_BOOT_FLAG_MAGIC;
-    params.hdr.header = KERNEL_HDR_MAGIC;
-    params.hdr.cmd_line_ptr = cmdline_addr.raw_value() as u32;
-    params.hdr.cmdline_size = cmdline_size as u32;
-    params.hdr.kernel_alignment = KERNEL_MIN_ALIGNMENT_BYTES;
-    if let Some(initrd_config) = initrd {
-        params.hdr.ramdisk_image = initrd_config.address.raw_value() as u32;
-        params.hdr.ramdisk_size = initrd_config.size as u32;
-    }
+        params.hdr.type_of_loader = KERNEL_LOADER_OTHER;
+        params.hdr.boot_flag = KERNEL_BOOT_FLAG_MAGIC;
+        params.hdr.header = KERNEL_HDR_MAGIC;
+        params.hdr.cmd_line_ptr = cmdline_addr.raw_value() as u32;
+        params.hdr.cmdline_size = cmdline_size as u32;
+        params.hdr.kernel_alignment = KERNEL_MIN_ALIGNMENT_BYTES;
+        if let Some(initrd_config) = initrd {
+            params.hdr.ramdisk_image = initrd_config.address.raw_value() as u32;
+            params.hdr.ramdisk_size = initrd_config.size as u32;
+        }
 
-    add_e820_entry(&mut params, 0, EBDA_START, E820_RAM)?;
+        add_e820_entry(&mut params, 0, EBDA_START, E820_RAM)?;
 
-    let last_addr = guest_mem.last_addr();
-    if last_addr < end_32bit_gap_start {
-        add_e820_entry(
-            &mut params,
-            himem_start.raw_value() as u64,
-            // it's safe to use unchecked_offset_from because
-            // mem_end > himem_start
-            last_addr.unchecked_offset_from(himem_start) as u64 + 1,
-            E820_RAM,
-        )?;
-    } else {
-        add_e820_entry(
-            &mut params,
-            himem_start.raw_value(),
-            // it's safe to use unchecked_offset_from because
-            // end_32bit_gap_start > himem_start
-            end_32bit_gap_start.unchecked_offset_from(himem_start),
-            E820_RAM,
-        )?;
-
-        if last_addr > first_addr_past_32bits {
+        let last_addr = guest_mem.last_addr();
+        if last_addr < end_32bit_gap_start {
             add_e820_entry(
                 &mut params,
-                first_addr_past_32bits.raw_value(),
+                himem_start.raw_value() as u64,
                 // it's safe to use unchecked_offset_from because
-                // mem_end > first_addr_past_32bits
-                last_addr.unchecked_offset_from(first_addr_past_32bits) + 1,
+                // mem_end > himem_start
+                last_addr.unchecked_offset_from(himem_start) as u64 + 1,
                 E820_RAM,
             )?;
-        }
-    }
+        } else {
+            add_e820_entry(
+                &mut params,
+                himem_start.raw_value(),
+                // it's safe to use unchecked_offset_from because
+                // end_32bit_gap_start > himem_start
+                end_32bit_gap_start.unchecked_offset_from(himem_start),
+                E820_RAM,
+            )?;
 
-    LinuxBootConfigurator::write_bootparams(
-        &BootParams::new(&params, GuestAddress(layout::ZERO_PAGE_START)),
-        guest_mem,
-    )
-    .map_err(|_| Error::ZeroPageSetup)
+            if last_addr > first_addr_past_32bits {
+                add_e820_entry(
+                    &mut params,
+                    first_addr_past_32bits.raw_value(),
+                    // it's safe to use unchecked_offset_from because
+                    // mem_end > first_addr_past_32bits
+                    last_addr.unchecked_offset_from(first_addr_past_32bits) + 1,
+                    E820_RAM,
+                )?;
+            }
+        }
+
+        LinuxBootConfigurator::write_bootparams(
+            &BootParams::new(&params, GuestAddress(layout::ZERO_PAGE_START)),
+            guest_mem,
+        )
+        .map_err(|_| Error::ZeroPageSetup)
+    } else {
+        Ok(())
+    }
 }
 
 /// Add an e820 region to the e820 map.
@@ -218,7 +228,7 @@ mod tests {
         let gm =
             vm_memory::test_utils::create_anon_guest_memory(&[(GuestAddress(0), 0x10000)], false)
                 .unwrap();
-        let config_err = configure_system(&gm, GuestAddress(0), 0, &None, 1);
+        let config_err = configure_system(&mut None, &gm, GuestAddress(0), 0, &None, 1);
         assert!(config_err.is_err());
         assert_eq!(
             config_err.unwrap_err(),
@@ -229,19 +239,19 @@ mod tests {
         let mem_size = 128 << 20;
         let arch_mem_regions = arch_memory_regions(mem_size);
         let gm = vm_memory::test_utils::create_anon_guest_memory(&arch_mem_regions, false).unwrap();
-        configure_system(&gm, GuestAddress(0), 0, &None, no_vcpus).unwrap();
+        configure_system(&mut None, &gm, GuestAddress(0), 0, &None, no_vcpus).unwrap();
 
         // Now assigning some memory that is equal to the start of the 32bit memory hole.
         let mem_size = 3328 << 20;
         let arch_mem_regions = arch_memory_regions(mem_size);
         let gm = vm_memory::test_utils::create_anon_guest_memory(&arch_mem_regions, false).unwrap();
-        configure_system(&gm, GuestAddress(0), 0, &None, no_vcpus).unwrap();
+        configure_system(&mut None, &gm, GuestAddress(0), 0, &None, no_vcpus).unwrap();
 
         // Now assigning some memory that falls after the 32bit memory hole.
         let mem_size = 3330 << 20;
         let arch_mem_regions = arch_memory_regions(mem_size);
         let gm = vm_memory::test_utils::create_anon_guest_memory(&arch_mem_regions, false).unwrap();
-        configure_system(&gm, GuestAddress(0), 0, &None, no_vcpus).unwrap();
+        configure_system(&mut None, &gm, GuestAddress(0), 0, &None, no_vcpus).unwrap();
     }
 
     #[test]

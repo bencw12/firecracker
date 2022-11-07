@@ -9,6 +9,8 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_arch = "x86_64")]
+use arch::x86_64::sev::Sev;
 use arch::InitrdConfig;
 #[cfg(target_arch = "x86_64")]
 use cpuid::common::is_same_model;
@@ -32,7 +34,7 @@ use userfaultfd::Uffd;
 use utils::eventfd::EventFd;
 use utils::terminal::Terminal;
 use utils::time::TimestampUs;
-use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
+use vm_memory::{Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 #[cfg(target_arch = "aarch64")]
 use vm_superio::Rtc;
 use vm_superio::Serial;
@@ -246,11 +248,20 @@ fn create_vmm_and_vcpus(
     uffd: Option<Uffd>,
     track_dirty_pages: bool,
     vcpu_count: u8,
+    sev_enabled: bool,
+    encryption: bool,
 ) -> std::result::Result<(Vmm, Vec<Vcpu>), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
     // Set up Kvm Vm and register memory regions.
     let mut vm = setup_kvm_vm(&guest_memory, track_dirty_pages)?;
+
+    let mut sev = None;
+    if sev_enabled {
+        let mut sev_dev = Sev::new(vm.fd().clone(), encryption);
+        sev_dev.sev_init().unwrap();
+        sev = Some(sev_dev);
+    }
 
     let vcpus_exit_evt = EventFd::new(libc::EFD_NONBLOCK)
         .map_err(Error::EventFd)
@@ -315,6 +326,8 @@ fn create_vmm_and_vcpus(
         mmio_device_manager,
         #[cfg(target_arch = "x86_64")]
         pio_device_manager,
+        #[cfg(target_arch = "x86_64")]
+        sev,
     };
 
     Ok((vmm, vcpus))
@@ -343,15 +356,28 @@ pub fn build_microvm_for_boot(
         .boot_source_builder()
         .ok_or(MissingKernelConfig)?;
 
+    let sev_enabled = vm_resources.sev.is_some();
+
     let track_dirty_pages = vm_resources.track_dirty_pages();
     let guest_memory =
         create_guest_memory(vm_resources.vm_config().mem_size_mib, track_dirty_pages)?;
     let vcpu_config = vm_resources.vcpu_config();
-    let entry_addr = load_kernel(boot_config, &guest_memory)?;
+
+    let entry_addr = if !sev_enabled {
+        load_kernel(boot_config, &guest_memory)?
+    } else {
+        arch::x86_64::sev::FIRMWARE_ADDR
+    };
+
     let initrd = load_initrd_from_config(boot_config, &guest_memory)?;
     // Clone the command-line so that a failed boot doesn't pollute the original.
     #[allow(unused_mut)]
     let mut boot_cmdline = boot_config.cmdline.clone();
+
+    let encryption = match &vm_resources.sev {
+        None => false,
+        Some(cfg) => cfg.encryption,
+    };
 
     let (mut vmm, mut vcpus) = create_vmm_and_vcpus(
         instance_info,
@@ -360,6 +386,8 @@ pub fn build_microvm_for_boot(
         None,
         track_dirty_pages,
         vcpu_config.vcpu_count,
+        sev_enabled,
+        encryption,
     )?;
 
     // The boot timer device needs to be the first device attached in order
@@ -394,13 +422,24 @@ pub fn build_microvm_for_boot(
     attach_legacy_devices_aarch64(event_manager, &mut vmm, &mut boot_cmdline).map_err(Internal)?;
 
     configure_system_for_boot(
-        &vmm,
+        &mut vmm,
         vcpus.as_mut(),
         vcpu_config,
         entry_addr,
         &initrd,
         boot_cmdline,
     )?;
+
+    #[cfg(target_arch = "x86_64")]
+    if sev_enabled {
+        vmm.setup_sev(&vm_resources.sev.as_ref().unwrap().firmware_path)
+            .unwrap();
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    if sev_enabled {
+        vmm.finish_sev().unwrap();
+    }
 
     // Move vcpus to their own threads and start their state machine in the 'Paused' state.
     vmm.start_vcpus(
@@ -520,6 +559,8 @@ pub fn build_microvm_from_snapshot(
         uffd,
         track_dirty_pages,
         vcpu_count,
+        false,
+        false,
     )?;
 
     #[cfg(target_arch = "x86_64")]
@@ -567,7 +608,7 @@ pub fn build_microvm_from_snapshot(
     // Restore devices states.
     let mmio_ctor_args = MMIODevManagerConstructorArgs {
         mem: guest_memory,
-        vm: vmm.vm.fd(),
+        vm: &vmm.vm.fd(),
         event_manager,
         for_each_restored_device: VmResources::update_from_restored_device,
         vm_resources,
@@ -786,7 +827,7 @@ fn create_pio_dev_manager_with_legacy_devices(
     let mut pio_dev_mgr =
         PortIODeviceManager::new(serial, i8042_reset_evfd).map_err(Error::CreateLegacyDevice)?;
     pio_dev_mgr
-        .register_devices(vm.fd())
+        .register_devices(&vm.fd())
         .map_err(Error::LegacyIOBus)?;
     Ok(pio_dev_mgr)
 }
@@ -844,7 +885,7 @@ fn create_vcpus(vm: &Vm, vcpu_count: u8, exit_evt: &EventFd) -> super::Result<Ve
 /// Configures the system for booting Linux.
 #[cfg_attr(target_arch = "aarch64", allow(unused))]
 pub fn configure_system_for_boot(
-    vmm: &Vmm,
+    vmm: &mut Vmm,
     vcpus: &mut [Vcpu],
     vcpu_config: VcpuConfig,
     entry_addr: GuestAddress,
@@ -861,6 +902,7 @@ pub fn configure_system_for_boot(
                     entry_addr,
                     &vcpu_config,
                     vmm.vm.supported_cpuid().clone(),
+                    vmm.sev.is_some(),
                 )
                 .map_err(Error::VcpuConfigure)
                 .map_err(Internal)?;
@@ -878,7 +920,20 @@ pub fn configure_system_for_boot(
             &boot_cmdline,
         )
         .map_err(LoadCommandline)?;
+
+        #[cfg(target_arch = "x86_64")]
+        if let Some(sev) = vmm.sev.as_mut() {
+            sev.launch_update_data(
+                vmm.guest_memory
+                    .get_host_address(GuestAddress(arch::x86_64::layout::CMDLINE_START))
+                    .unwrap() as u64,
+                boot_cmdline.as_cstring().unwrap().as_bytes().len() as u32,
+            )
+            .unwrap();
+        }
+
         arch::x86_64::configure_system(
+            &mut vmm.sev,
             &vmm.guest_memory,
             vm_memory::GuestAddress(arch::x86_64::layout::CMDLINE_START),
             cmdline_size,
@@ -929,7 +984,7 @@ fn attach_virtio_device<T: 'static + VirtioDevice + MutEventSubscriber>(
     // The device mutex mustn't be locked here otherwise it will deadlock.
     let device = MmioTransport::new(vmm.guest_memory().clone(), device);
     vmm.mmio_device_manager
-        .register_mmio_virtio_for_boot(vmm.vm.fd(), id, device, cmdline)
+        .register_mmio_virtio_for_boot(&vmm.vm.fd(), id, device, cmdline)
         .map_err(RegisterMmioDevice)
         .map(|_| ())
 }
@@ -958,7 +1013,8 @@ pub(crate) fn attach_debug_port_device(
     let debug_port = Arc::new(Mutex::new(devices::pseudo::DebugPort::new(t_init)));
 
     vmm.pio_device_manager
-        .io_bus.insert(debug_port, 0x80, 0x1)
+        .io_bus
+        .insert(debug_port, 0x80, 0x1)
         .map_err(RegisterPioDevice)?;
     Ok(())
 }
@@ -1154,6 +1210,8 @@ pub mod tests {
             mmio_device_manager,
             #[cfg(target_arch = "x86_64")]
             pio_device_manager,
+            #[cfg(target_arch = "x86_64")]
+            sev: None,
         }
     }
 
