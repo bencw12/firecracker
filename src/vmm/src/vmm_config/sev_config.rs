@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub struct SevConfig {
     /// Path to SEV firmware
     pub firmware_path: String,
+    /// Path to hashes
+    pub hashes_path: String,
     /// Whether or not to enable encryption
     pub encryption: bool,
 }
