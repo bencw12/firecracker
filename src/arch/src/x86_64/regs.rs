@@ -113,6 +113,7 @@ pub fn setup_regs(vcpu: &VcpuFd, boot_ip: u64) -> std::result::Result<(), SetupR
         rbp: super::layout::BOOT_STACK_POINTER as u64,
         // Must point to zero page address per Linux ABI. This is x86_64 specific.
         rsi: super::layout::ZERO_PAGE_START as u64,
+        rbx: super::layout::PVH_INFO_START as u64, 
         ..Default::default()
     };
 
