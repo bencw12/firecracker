@@ -398,6 +398,14 @@ pub fn build_microvm_for_boot(
         attach_debug_port_device(&mut vmm, t_init)?;
     }
 
+    if sev_enabled {
+        attach_fw_cfg_device(
+            &mut vmm,
+            boot_config,
+            &vm_resources.sev.as_ref().unwrap().hashes_path,
+        )?;
+    }
+
     if let Some(balloon) = vm_resources.balloon.get() {
         attach_balloon_device(&mut vmm, &mut boot_cmdline, balloon, event_manager)?;
     }
@@ -1015,6 +1023,27 @@ pub(crate) fn attach_debug_port_device(
     vmm.pio_device_manager
         .io_bus
         .insert(debug_port, 0x80, 0x1)
+        .map_err(RegisterPioDevice)?;
+    Ok(())
+}
+
+pub(crate) fn attach_fw_cfg_device(
+    vmm: &mut Vmm,
+    boot_config: &BootConfig,
+    hashes_path: &String,
+) -> std::result::Result<(), StartMicrovmError> {
+    use self::StartMicrovmError::*;
+
+    let fw_cfg = Arc::new(Mutex::new(devices::pseudo::FwCfg::new(
+        boot_config.kernel_file.try_clone().unwrap(),
+        hashes_path,
+        vmm.guest_memory().clone(),
+        &mut vmm.sev,
+    )));
+
+    vmm.pio_device_manager
+        .io_bus
+        .insert(fw_cfg, devices::pseudo::FW_CFG_REG, 0x1)
         .map_err(RegisterPioDevice)?;
     Ok(())
 }
