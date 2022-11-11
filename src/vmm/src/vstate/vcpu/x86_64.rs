@@ -280,6 +280,15 @@ impl KvmVcpu {
             CpuFeaturesTemplate::None => {}
         }
 
+        //ADD MTRR CPUID HERE
+        let entries = cpuid.as_mut_slice();
+
+        for entry in entries.iter_mut() {
+            if entry.function == 1 && entry.index == 0 {
+                entry.edx |= 1 << 0xC;
+            }
+        }
+
         self.fd
             .set_cpuid2(&cpuid)
             .map_err(KvmVcpuConfigureError::SetCpuid)?;
