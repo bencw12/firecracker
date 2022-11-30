@@ -18,16 +18,13 @@ pub mod regs;
 /// Logic for SEV
 pub mod sev;
 
-use std::convert::TryInto;
-use std::mem;
-
 use linux_loader::configurator::linux::LinuxBootConfigurator;
 use linux_loader::configurator::{BootConfigurator, BootParams};
 use linux_loader::loader::bootparam::boot_params;
 use linux_loader::loader::elf::start_info::{
     hvm_memmap_table_entry, hvm_modlist_entry, hvm_start_info,
 };
-use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion, Bytes, ByteValued};
+use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion, ByteValued};
 
 use crate::InitrdConfig;
 
@@ -150,70 +147,66 @@ pub fn configure_system(
 
     mptable::setup_mptable(guest_mem, num_cpus, sev)?;
 
-    //Don't need bootparams if using SEV
-    if sev.is_none() {
-         // Note that this puts the mptable at the last 1k of Linux's 640k base RAM
-        let mut params = boot_params::default();
+    // Note that this puts the mptable at the last 1k of Linux's 640k base RAM
+    let mut params = boot_params::default();
 
-        params.hdr.type_of_loader = KERNEL_LOADER_OTHER;
-        params.hdr.boot_flag = KERNEL_BOOT_FLAG_MAGIC;
-        params.hdr.header = KERNEL_HDR_MAGIC;
-        params.hdr.cmd_line_ptr = cmdline_addr.raw_value() as u32;
-        params.hdr.cmdline_size = cmdline_size as u32;
-        params.hdr.kernel_alignment = KERNEL_MIN_ALIGNMENT_BYTES;
-        if let Some(initrd_config) = initrd {
-            params.hdr.ramdisk_image = initrd_config.address.raw_value() as u32;
-            params.hdr.ramdisk_size = initrd_config.size as u32;
-        }
-
-        add_e820_entry(&mut params, 0, EBDA_START, E820_RAM)?;
-
-        let last_addr = guest_mem.last_addr();
-        if last_addr < end_32bit_gap_start {
-            add_e820_entry(
-                &mut params,
-                himem_start.raw_value() as u64,
-                // it's safe to use unchecked_offset_from because
-                // mem_end > himem_start
-                last_addr.unchecked_offset_from(himem_start) as u64 + 1,
-                E820_RAM,
-            )?;
-        } else {
-            add_e820_entry(
-                &mut params,
-                himem_start.raw_value(),
-                // it's safe to use unchecked_offset_from because
-                // end_32bit_gap_start > himem_start
-                end_32bit_gap_start.unchecked_offset_from(himem_start),
-                E820_RAM,
-            )?;
-
-            if last_addr > first_addr_past_32bits {
-                add_e820_entry(
-                    &mut params,
-                    first_addr_past_32bits.raw_value(),
-                    // it's safe to use unchecked_offset_from because
-                    // mem_end > first_addr_past_32bits
-                    last_addr.unchecked_offset_from(first_addr_past_32bits) + 1,
-                    E820_RAM,
-                )?;
-            }
-        }
-
-        let boot_params = BootParams::new(&params, GuestAddress(layout::ZERO_PAGE_START));
-
-        let result = LinuxBootConfigurator::write_bootparams(&boot_params, guest_mem)
-            .map_err(|_| Error::ZeroPageSetup);
-
-        result
-    } else {
-        // Populate pvh start info so firmware can configure guest bootparams
-        configure_pvh(
-            guest_mem, 
-            cmdline_addr, 
-            initrd,
-            sev.as_mut().unwrap())
+    params.hdr.type_of_loader = KERNEL_LOADER_OTHER;
+    params.hdr.boot_flag = KERNEL_BOOT_FLAG_MAGIC;
+    params.hdr.header = KERNEL_HDR_MAGIC;
+    params.hdr.cmd_line_ptr = cmdline_addr.raw_value() as u32;
+    params.hdr.cmdline_size = cmdline_size as u32;
+    params.hdr.kernel_alignment = KERNEL_MIN_ALIGNMENT_BYTES;
+    if let Some(initrd_config) = initrd {
+        params.hdr.ramdisk_image = initrd_config.address.raw_value() as u32;
+        params.hdr.ramdisk_size = initrd_config.size as u32;
     }
+
+    add_e820_entry(&mut params, 0, EBDA_START, E820_RAM)?;
+
+    let last_addr = guest_mem.last_addr();
+    if last_addr < end_32bit_gap_start {
+        add_e820_entry(
+            &mut params,
+            himem_start.raw_value() as u64,
+            // it's safe to use unchecked_offset_from because
+            // mem_end > himem_start
+            last_addr.unchecked_offset_from(himem_start) as u64 + 1,
+            E820_RAM,
+        )?;
+    } else {
+        add_e820_entry(
+            &mut params,
+            himem_start.raw_value(),
+            // it's safe to use unchecked_offset_from because
+            // end_32bit_gap_start > himem_start
+            end_32bit_gap_start.unchecked_offset_from(himem_start),
+            E820_RAM,
+        )?;
+
+        if last_addr > first_addr_past_32bits {
+            add_e820_entry(
+                &mut params,
+                first_addr_past_32bits.raw_value(),
+                // it's safe to use unchecked_offset_from because
+                // mem_end > first_addr_past_32bits
+                last_addr.unchecked_offset_from(first_addr_past_32bits) + 1,
+                E820_RAM,
+            )?;
+        }
+    }
+
+    let boot_params = BootParams::new(&params, GuestAddress(layout::ZERO_PAGE_START));
+
+    let result = LinuxBootConfigurator::write_bootparams(&boot_params, guest_mem)
+        .map_err(|_| Error::ZeroPageSetup);
+
+    if let Some(sev) = sev {
+        let addr = guest_mem.get_host_address(boot_params.header_start).unwrap() as u64;
+        let len = boot_params.header.len();
+        sev.launch_update_data(addr, len as u32).unwrap();
+    }
+
+    result
 }
 
 /// Add an e820 region to the e820 map.
@@ -234,137 +227,6 @@ fn add_e820_entry(
     params.e820_entries += 1;
 
     Ok(())
-}
-
-fn configure_pvh(
-    guest_mem: &GuestMemoryMmap,
-    cmdline_addr: GuestAddress,
-    initrd: &Option<InitrdConfig>,
-    sev: &mut Sev
-) -> super::Result<()> {
-
-    const XEN_HVM_START_MAGIC_VALUE: u32 = 0x336ec578;
-
-    let mut start_info: StartInfoWrapper = StartInfoWrapper(hvm_start_info::default());   
-
-    start_info.0.magic = XEN_HVM_START_MAGIC_VALUE;
-    start_info.0.version = 1; // pvh has version 1
-    start_info.0.nr_modules = 0;
-    start_info.0.cmdline_paddr = cmdline_addr.raw_value() as u64;
-    start_info.0.memmap_paddr = layout::ZERO_PAGE_START;
-    
-    if let Some(initramfs_config) = initrd {
-        // The initramfs has been written to guest memory already, here we just need to
-        // create the module structure that describes it.
-        let ramdisk_mod: ModlistEntryWrapper = ModlistEntryWrapper(hvm_modlist_entry {
-            paddr: initramfs_config.address.raw_value(),
-            size: initramfs_config.size as u64,
-            ..Default::default()
-        });
-
-        start_info.0.nr_modules += 1;
-        start_info.0.modlist_paddr = layout::MODLIST_START;
-
-        // Write the modlist struct to guest memory.
-        guest_mem
-            .write_obj(ramdisk_mod, GuestAddress(layout::MODLIST_START))
-            .map_err(|_e| Error::ModlistSetup)?;
-    }
-
-    // Vector to hold the memory maps which needs to be written to guest memory
-    // at MEMMAP_START after all of the mappings are recorded.
-    let mut memmap: Vec<hvm_memmap_table_entry> = Vec::new();
-
-    // Create the memory map entries.
-    add_memmap_entry(&mut memmap, 0, 0xa0000, E820_RAM);
-
-    let mem_end = guest_mem.last_addr();
-    
-    if mem_end < GuestAddress(0xc000_0000) {
-        add_memmap_entry(
-            &mut memmap,
-            layout::HIMEM_START,
-            mem_end.unchecked_offset_from(GuestAddress(0x100000)) + 1,
-            E820_RAM,
-        );
-    } else {
-        add_memmap_entry(
-            &mut memmap,
-            layout::HIMEM_START,
-            GuestAddress(0xc000_0000).unchecked_offset_from(GuestAddress(0x100000)),
-            E820_RAM,
-        );
-        if mem_end > GuestAddress(layout::RAM_64BIT_START) {
-            add_memmap_entry(
-                &mut memmap,
-                layout::RAM_64BIT_START,
-                mem_end.unchecked_offset_from(GuestAddress(layout::RAM_64BIT_START)) + 1,
-                E820_RAM,
-            );
-        }
-    }
-
-    start_info.0.memmap_entries = memmap.len() as u32;
-
-    // Copy the vector with the memmap table to the MEMMAP_START address
-    // which is already saved in the memmap_paddr field of hvm_start_info struct.
-    let mut memmap_start_addr = GuestAddress(layout::MEMMAP_START);
-
-    guest_mem
-        .checked_offset(
-            memmap_start_addr,
-            mem::size_of::<hvm_memmap_table_entry>() * start_info.0.memmap_entries as usize,
-        )
-        .ok_or(Error::MemmapTablePastRamEnd)?;
-
-    // For every entry in the memmap vector, create a MemmapTableEntryWrapper
-    // and write it to guest memory.
-    for memmap_entry in memmap {
-        let map_entry_wrapper: MemmapTableEntryWrapper = MemmapTableEntryWrapper(memmap_entry);
-
-        guest_mem
-            .write_obj(map_entry_wrapper, memmap_start_addr)
-            .map_err(|_| Error::MemmapTableSetup)?;
-
-        memmap_start_addr =
-            memmap_start_addr.unchecked_add(mem::size_of::<hvm_memmap_table_entry>() as u64);
-    }
-
-    let addr = guest_mem.get_host_address(GuestAddress(layout::MEMMAP_START)).unwrap() as u64;
-    let len = mem::size_of::<hvm_memmap_table_entry>() * start_info.0.memmap_entries as usize;
-    println!("LEN {}", len);
-
-    sev.launch_update_data(addr, len.try_into().unwrap())
-        .unwrap();
-
-    // The hvm_start_info struct itself must be stored at PVH_START_INFO
-    // address, and %rbx will be initialized to contain PVH_INFO_START prior to
-    // starting the guest, as required by the PVH ABI.
-    let start_info_addr = GuestAddress(layout::PVH_INFO_START);
-    guest_mem
-        .checked_offset(start_info_addr, mem::size_of::<hvm_start_info>())
-        .ok_or(Error::StartInfoPastRamEnd)?;
-
-    // Write the start_info struct to guest memory.
-    guest_mem
-        .write_obj(start_info, start_info_addr)
-        .map_err(|_| Error::StartInfoSetup)?;
-
-    let addr = guest_mem.get_host_address(start_info_addr).unwrap() as u64;
-    let len = mem::size_of::<StartInfoWrapper>() as u32;
-    sev.launch_update_data(addr, len).unwrap();
-    
-    Ok(())
-}
-
-fn add_memmap_entry(memmap: &mut Vec<hvm_memmap_table_entry>, addr: u64, size: u64, mem_type: u32) {
-    // Add the table entry to the vector
-    memmap.push(hvm_memmap_table_entry {
-        addr,
-        size,
-        type_: mem_type,
-        reserved: 0,
-    });
 }
 
 #[cfg(test)]
