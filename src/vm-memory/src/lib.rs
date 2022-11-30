@@ -5,9 +5,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
-use std::io::{self, Error as IoError};
+use std::io::{Error as IoError};
 use std::os::unix::io::AsRawFd;
 
+use libc::c_void;
 use vm_memory_upstream::bitmap::AtomicBitmap;
 pub use vm_memory_upstream::bitmap::Bitmap;
 use vm_memory_upstream::mmap::{check_file_offset, NewBitmap};
@@ -44,49 +45,38 @@ fn build_guarded_region(
     flags: i32,
     track_dirty_pages: bool,
 ) -> Result<GuestMmapRegion, MmapRegionError> {
-    let page_size = utils::get_page_size().expect("Cannot retrieve page size.");
+    //let page_size = utils::get_page_size().expect("Cannot retrieve page size.");
+    //temporarily hardcoding this to 2M to use transparent hugepages
+    let page_size = 1024 * 1024 * 2;
     // Create the guarded range size (received size + X pages),
     // where X is defined as a constant GUARD_PAGE_COUNT.
     let guarded_size = size + GUARD_PAGE_COUNT * 2 * page_size;
 
     // Map the guarded range to PROT_NONE
-    let guard_addr = unsafe {
-        libc::mmap(
-            std::ptr::null_mut(),
-            guarded_size,
-            libc::PROT_NONE,
-            libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
-            -1,
-            0,
-        )
+    let mut addr_buf = [0u64];
+    let guard_addr = addr_buf.as_mut_ptr() as *mut c_void;
+    unsafe {
+        libc::posix_memalign(guard_addr as *mut *mut c_void, page_size, guarded_size)
     };
 
-    if guard_addr == libc::MAP_FAILED {
+    let guard_addr = addr_buf[0] as *mut c_void;
+
+
+    // let guard_addr = unsafe {
+    //     libc::mmap(
+    //         std::ptr::null_mut(),
+    //         guarded_size,
+    //         libc::PROT_NONE,
+    //         libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
+    //         -1,
+    //         0,
+    //     )
+    // };
+
+    println!("guard_addr: 0x{:x}", guard_addr as u64);
+
+    if guard_addr == std::ptr::null_mut() {
         return Err(MmapRegionError::Mmap(IoError::last_os_error()));
-    }
-
-    //TEMPORARY - will be config option
-    //hugepages gives huge performance boost during SEV PSP measurement
-    let hugepage = true;
-
-    if hugepage {
-        let ret = unsafe {
-            libc::madvise(
-                guard_addr,
-                guarded_size as libc::size_t,
-                libc::MADV_HUGEPAGE,
-            )
-        };
-        if ret != 0 {
-            let err = io::Error::last_os_error();
-            let errno = err.raw_os_error().unwrap();
-            if errno == libc::EINVAL {
-                println!("kernel not configured with CONFIG_TRANSPARENT_HUGEPAGE");
-            } else {
-                println!("madvise error: {}", err);
-            }
-            println!("failed to back memory region with huge pages");
-        }
     }
 
     let (fd, offset) = match maybe_file_offset {

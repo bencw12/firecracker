@@ -390,6 +390,12 @@ pub fn build_microvm_for_boot(
         encryption,
     )?;
 
+    #[cfg(target_arch = "x86_64")]
+    if sev_enabled {
+        vmm.setup_sev(&vm_resources.sev.as_ref().unwrap().firmware_path)
+            .unwrap();
+    }
+
     // The boot timer device needs to be the first device attached in order
     // to maintain the same MMIO address referenced in the documentation
     // and tests.
@@ -437,12 +443,6 @@ pub fn build_microvm_for_boot(
         &initrd,
         boot_cmdline,
     )?;
-
-    #[cfg(target_arch = "x86_64")]
-    if sev_enabled {
-        vmm.setup_sev(&vm_resources.sev.as_ref().unwrap().firmware_path)
-            .unwrap();
-    }
 
     #[cfg(target_arch = "x86_64")]
     if sev_enabled {
@@ -773,6 +773,30 @@ pub(crate) fn setup_kvm_vm(
     vm.memory_init(guest_memory, kvm.max_memslots(), track_dirty_pages)
         .map_err(Error::Vm)
         .map_err(Internal)?;
+
+    for region in guest_memory.iter() {
+        let hugepage = true;
+        if hugepage {
+            let ret = unsafe {
+                libc::madvise(
+                    region.as_ptr() as *mut libc::c_void,
+                    region.size() as libc::size_t,
+                    libc::MADV_HUGEPAGE,
+                )
+            };
+            if ret != 0 {
+                let err = io::Error::last_os_error();
+                let errno = err.raw_os_error().unwrap();
+                if errno == libc::EINVAL {
+                    println!("kernel not configured with CONFIG_TRANSPARENT_HUGEPAGE");
+                } else {
+                    println!("madvise error: {}", err);
+                }
+                println!("failed to back memory region with huge pages");
+            }
+        }
+    }
+
     Ok(vm)
 }
 
