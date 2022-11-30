@@ -285,7 +285,12 @@ impl KvmVcpu {
 
         for entry in entries.iter_mut() {
             if entry.function == 1 && entry.index == 0 {
+                // Enable MTRR feature
                 entry.edx |= 1 << 0xC;
+                // Patch tsc deadline timer bit
+                entry.ecx |= 1 << 0x18;
+                // Patch hypervisor bit
+                entry.ecx |= 1 << 0x1F;
             }
         }
 
