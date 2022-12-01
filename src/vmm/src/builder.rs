@@ -250,6 +250,7 @@ fn create_vmm_and_vcpus(
     vcpu_count: u8,
     sev_enabled: bool,
     encryption: bool,
+    timestamp: TimestampUs,
 ) -> std::result::Result<(Vmm, Vec<Vcpu>), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -258,7 +259,7 @@ fn create_vmm_and_vcpus(
 
     let mut sev = None;
     if sev_enabled {
-        let mut sev_dev = Sev::new(vm.fd().clone(), encryption);
+        let mut sev_dev = Sev::new(vm.fd().clone(), encryption, timestamp);
         sev_dev.sev_init().unwrap();
         sev = Some(sev_dev);
     }
@@ -388,6 +389,7 @@ pub fn build_microvm_for_boot(
         vcpu_config.vcpu_count,
         sev_enabled,
         encryption,
+        t_init.clone(),
     )?;
 
     #[cfg(target_arch = "x86_64")]
@@ -569,6 +571,7 @@ pub fn build_microvm_from_snapshot(
         vcpu_count,
         false,
         false,
+        TimestampUs::default()
     )?;
 
     #[cfg(target_arch = "x86_64")]

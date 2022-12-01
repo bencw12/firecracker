@@ -17,6 +17,7 @@ use kvm_bindings::{
 use kvm_ioctls::VmFd;
 use logger::info;
 use thiserror::Error;
+use utils::time::TimestampUs;
 use vm_memory::{Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 
 /// Length of intial boot time measurement
@@ -137,6 +138,7 @@ pub struct Sev {
     policy: u32,
     state: State,
     measure: Vec<u8>,
+    timestamp: TimestampUs, 
     /// position of the Cbit
     pub cbitpos: u32,
     /// DEBUG whether or not encryption is active. This is for testing the firmware without encryption
@@ -146,7 +148,7 @@ pub struct Sev {
 
 impl Sev {
     ///Initialize SEV
-    pub fn new(vm_fd: Arc<VmFd>, encryption: bool) -> Self {
+    pub fn new(vm_fd: Arc<VmFd>, encryption: bool, timestamp: TimestampUs) -> Self {
         //Open /dev/sev
 
         info!("Creating SEV device: policy 0x{:x}", DEFAULT_POLICY);
@@ -173,6 +175,7 @@ impl Sev {
             measure: Vec::with_capacity(48),
             cbitpos: ebx,
             encryption: encryption,
+            timestamp,
         }
     }
 
@@ -277,9 +280,20 @@ impl Sev {
             ..Default::default()
         };
 
-        info!("Pre-encrypting region...");
-        self.sev_ioctl(&mut msg).unwrap();
-        info!("Pre-encryption done");
+        let now_tm_us = TimestampUs::default();
+        let real = now_tm_us.time_us - self.timestamp.time_us;
+        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
+        info!(
+            "Pre-encryption start: {:>06} us, {:>06} CPU us",
+            real, cpu
+        );
+        self.sev_ioctl(&mut msg).unwrap();let now_tm_us = TimestampUs::default();
+        let real = now_tm_us.time_us - self.timestamp.time_us;
+        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
+        info!(
+            "Pre-encryption done: {:>06} us, {:>06} CPU us",
+            real, cpu
+        );
         Ok(())
     }
 
