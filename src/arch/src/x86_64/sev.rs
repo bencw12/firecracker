@@ -374,7 +374,9 @@ impl Sev {
 
         let addr = guest_mem.get_host_address(FIRMWARE_ADDR).unwrap() as u64;
 
+        info!("Pre-encrypting firmware");
         self.launch_update_data(addr, len.try_into().unwrap())?;
+        info!("Done pre-encrypting firmware");
 
         Ok(())
     }
