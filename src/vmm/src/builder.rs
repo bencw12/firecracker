@@ -363,8 +363,6 @@ pub fn build_microvm_for_boot(
     let track_dirty_pages = vm_resources.track_dirty_pages();
     let hugepages = vm_resources.hugepages();
 
-    println!("hugepages: {}", hugepages);
-
     let guest_memory =
         create_guest_memory(vm_resources.vm_config().mem_size_mib, track_dirty_pages, hugepages)?;
     let vcpu_config = vm_resources.vcpu_config();
