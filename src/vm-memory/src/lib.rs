@@ -44,10 +44,18 @@ fn build_guarded_region(
     prot: i32,
     flags: i32,
     track_dirty_pages: bool,
+    hugepages: bool,
 ) -> Result<GuestMmapRegion, MmapRegionError> {
     //let page_size = utils::get_page_size().expect("Cannot retrieve page size.");
     //temporarily hardcoding this to 2M to use transparent hugepages
-    let page_size = 1024 * 1024 * 2;
+    let page_size;
+    if hugepages {
+        //2MB pages
+        page_size = 1024 * 1024 * 2;
+    } else {
+        //4K pages
+        page_size = 1024 * 4;
+    }
     // Create the guarded range size (received size + X pages),
     // where X is defined as a constant GUARD_PAGE_COUNT.
     let guarded_size = size + GUARD_PAGE_COUNT * 2 * page_size;
@@ -60,20 +68,6 @@ fn build_guarded_region(
     };
 
     let guard_addr = addr_buf[0] as *mut c_void;
-
-
-    // let guard_addr = unsafe {
-    //     libc::mmap(
-    //         std::ptr::null_mut(),
-    //         guarded_size,
-    //         libc::PROT_NONE,
-    //         libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
-    //         -1,
-    //         0,
-    //     )
-    // };
-
-    println!("guard_addr: 0x{:x}", guard_addr as u64);
 
     if guard_addr == std::ptr::null_mut() {
         return Err(MmapRegionError::Mmap(IoError::last_os_error()));
@@ -124,6 +118,7 @@ fn build_guarded_region(
 pub fn create_guest_memory(
     regions: &[(Option<FileOffset>, GuestAddress, usize)],
     track_dirty_pages: bool,
+    hugepages: bool,
 ) -> std::result::Result<GuestMemoryMmap, Error> {
     let prot = libc::PROT_READ | libc::PROT_WRITE;
     let mut mmap_regions = Vec::with_capacity(regions.len());
@@ -135,7 +130,7 @@ pub fn create_guest_memory(
         };
 
         let mmap_region =
-            build_guarded_region(region.0.clone(), region.2, prot, flags, track_dirty_pages)
+            build_guarded_region(region.0.clone(), region.2, prot, flags, track_dirty_pages, hugepages)
                 .map_err(Error::MmapRegion)?;
 
         mmap_regions.push(GuestRegionMmap::new(mmap_region, region.1)?);
@@ -197,6 +192,7 @@ pub mod test_utils {
         create_guest_memory(
             &regions.iter().map(|r| (None, r.0, r.1)).collect::<Vec<_>>(),
             track_dirty_pages,
+            false,
         )
     }
 }
@@ -312,7 +308,7 @@ mod tests {
             let prot = libc::PROT_READ | libc::PROT_WRITE;
             let flags = libc::MAP_ANONYMOUS | libc::MAP_NORESERVE | libc::MAP_PRIVATE;
 
-            let region = build_guarded_region(None, size, prot, flags, false).unwrap();
+            let region = build_guarded_region(None, size, prot, flags, false, false).unwrap();
 
             // Verify that the region was built correctly
             assert_eq!(region.size(), size);
@@ -340,6 +336,7 @@ mod tests {
                 prot,
                 flags,
                 false,
+                false,
             )
             .unwrap();
 
@@ -365,7 +362,7 @@ mod tests {
                 (None, GuestAddress(0x30000), region_size),
             ];
 
-            let guest_memory = create_guest_memory(&regions, false).unwrap();
+            let guest_memory = create_guest_memory(&regions, false, false).unwrap();
             guest_memory.iter().for_each(|region| {
                 validate_guard_region(region);
                 loop_guard_region_to_sigsegv(region);
@@ -382,7 +379,7 @@ mod tests {
                 (None, GuestAddress(0x30000), region_size),
             ];
 
-            let guest_memory = create_guest_memory(&regions, false).unwrap();
+            let guest_memory = create_guest_memory(&regions, false, false).unwrap();
             guest_memory.iter().for_each(|region| {
                 assert!(region.bitmap().is_none());
             });
@@ -398,7 +395,7 @@ mod tests {
                 (None, GuestAddress(0x30000), region_size),
             ];
 
-            let guest_memory = create_guest_memory(&regions, true).unwrap();
+            let guest_memory = create_guest_memory(&regions, true, false).unwrap();
             guest_memory.iter().for_each(|region| {
                 assert!(region.bitmap().is_some());
             });
@@ -415,7 +412,7 @@ mod tests {
             (None, GuestAddress(region_size as u64), region_size), // pages 3-5
             (None, GuestAddress(region_size as u64 * 2), region_size), // pages 6-8
         ];
-        let guest_memory = create_guest_memory(&regions, true).unwrap();
+        let guest_memory = create_guest_memory(&regions, true, false).unwrap();
 
         let dirty_map = [
             // page 0: not dirty

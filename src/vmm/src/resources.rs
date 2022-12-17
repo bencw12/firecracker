@@ -245,6 +245,11 @@ impl VmResources {
         self.vm_config().track_dirty_pages
     }
 
+    /// Returns whether dirty page tracking is enabled or not.
+    pub fn hugepages(&self) -> bool {
+        self.vm_config().hugepages
+    }
+
     /// Configures the dirty page tracking functionality of the microVM.
     pub fn set_track_dirty_pages(&mut self, dirty_page_tracking: bool) {
         self.vm_config.track_dirty_pages = dirty_page_tracking;
@@ -310,6 +315,10 @@ impl VmResources {
         // Update dirty page tracking
         if let Some(track_dirty_pages) = machine_config.track_dirty_pages {
             self.vm_config.track_dirty_pages = track_dirty_pages;
+        }
+
+        if let Some(hugepages) = machine_config.hugepages {
+            self.vm_config.hugepages = hugepages;
         }
 
         Ok(())
@@ -1305,6 +1314,7 @@ mod tests {
             smt: Some(true),
             cpu_template: Some(CpuFeaturesTemplate::T2),
             track_dirty_pages: Some(false),
+            hugepages: Some(false)
         };
 
         assert_ne!(

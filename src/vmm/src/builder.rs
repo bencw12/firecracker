@@ -247,6 +247,7 @@ fn create_vmm_and_vcpus(
     guest_memory: GuestMemoryMmap,
     uffd: Option<Uffd>,
     track_dirty_pages: bool,
+    hugepages: bool,
     vcpu_count: u8,
     sev_enabled: bool,
     encryption: bool,
@@ -255,7 +256,7 @@ fn create_vmm_and_vcpus(
     use self::StartMicrovmError::*;
 
     // Set up Kvm Vm and register memory regions.
-    let mut vm = setup_kvm_vm(&guest_memory, track_dirty_pages)?;
+    let mut vm = setup_kvm_vm(&guest_memory, track_dirty_pages, hugepages)?;
 
     let mut sev = None;
     if sev_enabled {
@@ -360,8 +361,12 @@ pub fn build_microvm_for_boot(
     let sev_enabled = vm_resources.sev.is_some();
 
     let track_dirty_pages = vm_resources.track_dirty_pages();
+    let hugepages = vm_resources.hugepages();
+
+    println!("hugepages: {}", hugepages);
+
     let guest_memory =
-        create_guest_memory(vm_resources.vm_config().mem_size_mib, track_dirty_pages)?;
+        create_guest_memory(vm_resources.vm_config().mem_size_mib, track_dirty_pages, hugepages)?;
     let vcpu_config = vm_resources.vcpu_config();
 
     let entry_addr = if !sev_enabled {
@@ -386,6 +391,7 @@ pub fn build_microvm_for_boot(
         guest_memory,
         None,
         track_dirty_pages,
+        hugepages,
         vcpu_config.vcpu_count,
         sev_enabled,
         encryption,
@@ -568,6 +574,7 @@ pub fn build_microvm_from_snapshot(
         guest_memory.clone(),
         uffd,
         track_dirty_pages,
+        false,
         vcpu_count,
         false,
         false,
@@ -611,6 +618,7 @@ pub fn build_microvm_from_snapshot(
         smt: Some(microvm_state.vm_info.smt),
         cpu_template: Some(microvm_state.vm_info.cpu_template),
         track_dirty_pages: Some(track_dirty_pages),
+        hugepages: None,
     })?;
 
     // Restore the boot source config paths.
@@ -661,6 +669,7 @@ pub fn build_microvm_from_snapshot(
 pub fn create_guest_memory(
     mem_size_mib: usize,
     track_dirty_pages: bool,
+    hugepages: bool,
 ) -> std::result::Result<GuestMemoryMmap, StartMicrovmError> {
     let mem_size = mem_size_mib << 20;
     let arch_mem_regions = arch::arch_memory_regions(mem_size);
@@ -671,6 +680,7 @@ pub fn create_guest_memory(
             .map(|(addr, size)| (None, *addr, *size))
             .collect::<Vec<_>>()[..],
         track_dirty_pages,
+        hugepages,
     )
     .map_err(StartMicrovmError::GuestMemoryMmap)
 }
@@ -767,6 +777,7 @@ where
 pub(crate) fn setup_kvm_vm(
     guest_memory: &GuestMemoryMmap,
     track_dirty_pages: bool,
+    hugepages: bool
 ) -> std::result::Result<Vm, StartMicrovmError> {
     use self::StartMicrovmError::Internal;
     let kvm = KvmContext::new()
@@ -778,8 +789,7 @@ pub(crate) fn setup_kvm_vm(
         .map_err(Internal)?;
 
     for region in guest_memory.iter() {
-        let hugepage = true;
-        if hugepage {
+        if hugepages {
             let ret = unsafe {
                 libc::madvise(
                     region.as_ptr() as *mut libc::c_void,
@@ -1232,14 +1242,14 @@ pub mod tests {
     }
 
     pub(crate) fn default_vmm() -> Vmm {
-        let guest_memory = create_guest_memory(128, false).unwrap();
+        let guest_memory = create_guest_memory(128, false, false).unwrap();
 
         let vcpus_exit_evt = EventFd::new(libc::EFD_NONBLOCK)
             .map_err(Error::EventFd)
             .map_err(StartMicrovmError::Internal)
             .unwrap();
 
-        let mut vm = setup_kvm_vm(&guest_memory, false).unwrap();
+        let mut vm = setup_kvm_vm(&guest_memory, false, false).unwrap();
         let mmio_device_manager = default_mmio_device_manager();
         #[cfg(target_arch = "x86_64")]
         let pio_device_manager = default_portio_device_manager();
@@ -1449,13 +1459,13 @@ pub mod tests {
 
         // Case 1: create guest memory without dirty page tracking
         {
-            let guest_memory = create_guest_memory(mem_size, false).unwrap();
+            let guest_memory = create_guest_memory(mem_size, false, false).unwrap();
             assert!(!is_dirty_tracking_enabled(&guest_memory));
         }
 
         // Case 2: create guest memory with dirty page tracking
         {
-            let guest_memory = create_guest_memory(mem_size, true).unwrap();
+            let guest_memory = create_guest_memory(mem_size, true, false).unwrap();
             assert!(is_dirty_tracking_enabled(&guest_memory));
         }
     }
@@ -1463,10 +1473,10 @@ pub mod tests {
     #[test]
     fn test_create_vcpus() {
         let vcpu_count = 2;
-        let guest_memory = create_guest_memory(128, false).unwrap();
+        let guest_memory = create_guest_memory(128, false, false).unwrap();
 
         #[allow(unused_mut)]
-        let mut vm = setup_kvm_vm(&guest_memory, false).unwrap();
+        let mut vm = setup_kvm_vm(&guest_memory, false, false).unwrap();
         let evfd = EventFd::new(libc::EFD_NONBLOCK).unwrap();
 
         #[cfg(target_arch = "x86_64")]
