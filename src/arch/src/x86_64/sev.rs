@@ -374,9 +374,21 @@ impl Sev {
 
         let addr = guest_mem.get_host_address(FIRMWARE_ADDR).unwrap() as u64;
 
-        info!("Pre-encrypting firmware");
+        let now_tm_us = TimestampUs::default();
+        let real = now_tm_us.time_us - self.timestamp.time_us;
+        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
+        info!(
+            "Pre-encrypting firmware: {:>06} us, {:>06} CPU us",
+            real, cpu
+        );
         self.launch_update_data(addr, len.try_into().unwrap())?;
-        info!("Done pre-encrypting firmware");
+        let now_tm_us = TimestampUs::default();
+        let real = now_tm_us.time_us - self.timestamp.time_us;
+        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
+        info!(
+            "Done pre-encrypting firmware: {:>06} us, {:>06} CPU us",
+            real, cpu
+        );
 
         Ok(())
     }
