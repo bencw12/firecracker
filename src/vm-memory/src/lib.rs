@@ -61,15 +61,45 @@ fn build_guarded_region(
     let guarded_size = size + GUARD_PAGE_COUNT * 2 * page_size;
 
     // Map the guarded range to PROT_NONE
-    let mut addr_buf = [0u64];
-    let guard_addr = addr_buf.as_mut_ptr() as *mut c_void;
-    unsafe {
-        libc::posix_memalign(guard_addr as *mut *mut c_void, page_size, guarded_size)
+    //map entire region
+    let mut guard_addr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            guarded_size,
+            libc::PROT_NONE,
+            libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
+            -1,
+            0,
+        )
     };
 
-    let guard_addr = addr_buf[0] as *mut c_void;
+    if guard_addr == libc::MAP_FAILED {
+        return Err(MmapRegionError::Mmap(IoError::last_os_error()));
+    }
 
-    if guard_addr == std::ptr::null_mut() {
+    //allign guest mem to page size so hugepages work
+    if (guard_addr as u64) + 4096 % page_size as u64 != 0 {
+
+
+        let aligned_addr = ((guard_addr as u64) + 4096) + (page_size as u64 - (((guard_addr as u64) + 4096) % page_size as u64));
+        println!("guard addr: 0x{:x}", guard_addr as usize);
+        println!("aligned addr: 0x{:x}", aligned_addr as usize);
+
+        if page_size == 2048 * 1024 {
+            //clean up the guard pages and set them back to 4k (messy fix)
+            unsafe {
+                let front_remain = (aligned_addr as usize + 2 * 1024 * 1024) - guard_addr as usize - 4096;
+                let back_remain = (page_size * 2) - front_remain;
+                libc::munmap(guard_addr, front_remain);
+                libc::munmap((aligned_addr as usize + 2 * 1024 * 1024 + size + 4096) as *mut c_void, back_remain - 4096);
+            }
+        }
+
+        guard_addr = aligned_addr as *mut c_void;
+
+    }
+
+    if guard_addr == libc::MAP_FAILED {
         return Err(MmapRegionError::Mmap(IoError::last_os_error()));
     }
 
@@ -99,6 +129,8 @@ fn build_guarded_region(
     if region_addr == libc::MAP_FAILED {
         return Err(MmapRegionError::Mmap(IoError::last_os_error()));
     }
+
+  
 
     let bitmap = match track_dirty_pages {
         true => Some(AtomicBitmap::with_len(size)),
