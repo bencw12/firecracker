@@ -82,8 +82,6 @@ fn build_guarded_region(
 
 
         let aligned_addr = ((guard_addr as u64) + 4096) + (page_size as u64 - (((guard_addr as u64) + 4096) % page_size as u64));
-        println!("guard addr: 0x{:x}", guard_addr as usize);
-        println!("aligned addr: 0x{:x}", aligned_addr as usize);
 
         if page_size == 2048 * 1024 {
             //clean up the guard pages and set them back to 4k (messy fix)
