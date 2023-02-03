@@ -24,8 +24,19 @@ use vm_memory::{Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 const MEASUREMENT_LEN: u32 = 48;
 /// Where the SEV firmware will be loaded in guest memory
 pub const FIRMWARE_ADDR: GuestAddress = GuestAddress(0x100000);
-/// Default guest policy (disable debug)
-const DEFAULT_POLICY: u32 = 1;
+//From SEV/KVM API SPEC
+/// Debugging of the guest is disallowed when set
+const POLICY_NOBDG: u32 = 1;
+/// Sharing keys with other guests is disallowed when set
+const POLICY_NOKS: u32 = 1 << 1;
+/// SEV-ES is required when set
+const POLICY_ES: u32 = 1 << 2;
+/// Sending the guest to another platform is disallowed when set
+const POLICY_NOSEND: u32 = 1 << 3;
+/// The guest must not be transmitted to another platform that is not in the domain when set
+const POLICY_DOMAIN: u32 = 1 << 4;
+/// The guest must not be transmitted to another platform that is not SEV capable when set
+const POLICY_SEV: u32 = 1 << 5;
 
 //This excludes SUCCESS=0 and ACTIVE=18
 #[derive(Debug, Error)]
@@ -138,20 +149,21 @@ pub struct Sev {
     policy: u32,
     state: State,
     measure: Vec<u8>,
-    timestamp: TimestampUs, 
+    timestamp: TimestampUs,
     /// position of the Cbit
     pub cbitpos: u32,
     /// DEBUG whether or not encryption is active. This is for testing the firmware without encryption
     pub encryption: bool,
-    // kernel_len: u32,
+    /// Whether the guest policy requires SEV-ES
+    pub es: bool,
 }
 
 impl Sev {
     ///Initialize SEV
-    pub fn new(vm_fd: Arc<VmFd>, encryption: bool, timestamp: TimestampUs) -> Self {
+    pub fn new(vm_fd: Arc<VmFd>, encryption: bool, timestamp: TimestampUs, policy: u32) -> Self {
         //Open /dev/sev
 
-        info!("Creating SEV device: policy 0x{:x}", DEFAULT_POLICY);
+        info!("Creating SEV device: policy 0x{:x}", policy);
 
         let fd = OpenOptions::new()
             .read(true)
@@ -160,6 +172,9 @@ impl Sev {
             .unwrap();
 
         let ebx;
+
+        //check if guest owner wants encrypted state
+        let es = (policy & POLICY_ES) != 0;
 
         //Get position of the C-bit
         unsafe {
@@ -170,12 +185,13 @@ impl Sev {
             fd: fd,
             vm_fd: vm_fd,
             handle: 0,
-            policy: DEFAULT_POLICY,
+            policy: policy,
             state: State::UnInit,
             measure: Vec::with_capacity(48),
             cbitpos: ebx,
             encryption: encryption,
             timestamp,
+            es,
         }
     }
 
@@ -283,17 +299,12 @@ impl Sev {
         let now_tm_us = TimestampUs::default();
         let real = now_tm_us.time_us - self.timestamp.time_us;
         let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
-        info!(
-            "Pre-encryption start: {:>06} us, {:>06} CPU us",
-            real, cpu
-        );
-        self.sev_ioctl(&mut msg).unwrap();let now_tm_us = TimestampUs::default();
+        info!("Pre-encryption start: {:>06} us, {:>06} CPU us", real, cpu);
+        self.sev_ioctl(&mut msg).unwrap();
+        let now_tm_us = TimestampUs::default();
         let real = now_tm_us.time_us - self.timestamp.time_us;
         let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
-        info!(
-            "Pre-encryption done: {:>06} us, {:>06} CPU us",
-            real, cpu
-        );
+        info!("Pre-encryption done: {:>06} us, {:>06} CPU us", real, cpu);
         Ok(())
     }
 

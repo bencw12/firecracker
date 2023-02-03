@@ -252,6 +252,7 @@ fn create_vmm_and_vcpus(
     sev_enabled: bool,
     encryption: bool,
     timestamp: TimestampUs,
+    policy: u32,
 ) -> std::result::Result<(Vmm, Vec<Vcpu>), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -260,7 +261,7 @@ fn create_vmm_and_vcpus(
 
     let mut sev = None;
     if sev_enabled {
-        let mut sev_dev = Sev::new(vm.fd().clone(), encryption, timestamp);
+        let mut sev_dev = Sev::new(vm.fd().clone(), encryption, timestamp, policy);
         sev_dev.sev_init().unwrap();
         sev = Some(sev_dev);
     }
@@ -363,8 +364,11 @@ pub fn build_microvm_for_boot(
     let track_dirty_pages = vm_resources.track_dirty_pages();
     let hugepages = vm_resources.hugepages();
 
-    let guest_memory =
-        create_guest_memory(vm_resources.vm_config().mem_size_mib, track_dirty_pages, hugepages)?;
+    let guest_memory = create_guest_memory(
+        vm_resources.vm_config().mem_size_mib,
+        track_dirty_pages,
+        hugepages,
+    )?;
     let vcpu_config = vm_resources.vcpu_config();
 
     let entry_addr = if !sev_enabled {
@@ -383,6 +387,11 @@ pub fn build_microvm_for_boot(
         Some(cfg) => cfg.encryption,
     };
 
+    let policy: u32 = match &vm_resources.sev {
+        None => 0,
+        Some(cfg) => cfg.policy,
+    };
+
     let (mut vmm, mut vcpus) = create_vmm_and_vcpus(
         instance_info,
         event_manager,
@@ -394,6 +403,7 @@ pub fn build_microvm_for_boot(
         sev_enabled,
         encryption,
         t_init.clone(),
+        policy,
     )?;
 
     #[cfg(target_arch = "x86_64")]
@@ -576,7 +586,8 @@ pub fn build_microvm_from_snapshot(
         vcpu_count,
         false,
         false,
-        TimestampUs::default()
+        TimestampUs::default(),
+        0,
     )?;
 
     #[cfg(target_arch = "x86_64")]
@@ -775,7 +786,7 @@ where
 pub(crate) fn setup_kvm_vm(
     guest_memory: &GuestMemoryMmap,
     track_dirty_pages: bool,
-    hugepages: bool
+    hugepages: bool,
 ) -> std::result::Result<Vm, StartMicrovmError> {
     use self::StartMicrovmError::Internal;
     let kvm = KvmContext::new()

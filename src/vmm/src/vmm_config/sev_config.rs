@@ -10,4 +10,6 @@ pub struct SevConfig {
     pub hashes_path: String,
     /// Whether or not to enable encryption
     pub encryption: bool,
+    /// Guest policy
+    pub policy: u32,
 }
