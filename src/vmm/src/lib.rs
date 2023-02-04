@@ -655,6 +655,8 @@ impl Vmm {
     /// Finishes SEV boot
     pub fn finish_sev(&mut self) -> Result<()> {
         if let Some(sev) = self.sev.as_mut() {
+            sev.launch_update_vmsa()
+                .map_err(|err| Error::SevFinish(err))?;
             sev.get_launch_measurement()
                 .map_err(|err| Error::SevFinish(err))?;
             sev.sev_launch_finish()

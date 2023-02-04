@@ -11,8 +11,9 @@ use std::{
 
 use kvm_bindings::{
     kvm_sev_cmd, kvm_sev_launch_measure, kvm_sev_launch_start, kvm_sev_launch_update_data,
-    sev_cmd_id_KVM_SEV_INIT, sev_cmd_id_KVM_SEV_LAUNCH_FINISH, sev_cmd_id_KVM_SEV_LAUNCH_MEASURE,
-    sev_cmd_id_KVM_SEV_LAUNCH_START, sev_cmd_id_KVM_SEV_LAUNCH_UPDATE_DATA,
+    sev_cmd_id_KVM_SEV_ES_INIT, sev_cmd_id_KVM_SEV_INIT, sev_cmd_id_KVM_SEV_LAUNCH_FINISH,
+    sev_cmd_id_KVM_SEV_LAUNCH_MEASURE, sev_cmd_id_KVM_SEV_LAUNCH_START,
+    sev_cmd_id_KVM_SEV_LAUNCH_UPDATE_DATA, sev_cmd_id_KVM_SEV_LAUNCH_UPDATE_VMSA,
 };
 use kvm_ioctls::VmFd;
 use logger::info;
@@ -218,8 +219,17 @@ impl Sev {
         if self.state != State::UnInit {
             return Err(SevError::InvalidPlatformState);
         }
+
+        let cmd = if self.es {
+            info!("Initializing SEV-ES");
+            sev_cmd_id_KVM_SEV_ES_INIT
+        } else {
+            info!("Initializing SEV-ES");
+            sev_cmd_id_KVM_SEV_INIT
+        };
+
         let mut init = kvm_sev_cmd {
-            id: sev_cmd_id_KVM_SEV_INIT,
+            id: cmd,
             data: 0,
             sev_fd: self.fd.as_raw_fd() as _,
             ..Default::default()
@@ -262,6 +272,30 @@ impl Sev {
         self.handle = start.handle;
         self.state = State::LaunchUpdate;
         info!("LAUNCH_START Done");
+        Ok(())
+    }
+
+    /// Encrypt VMCA
+    pub fn launch_update_vmsa(&mut self) -> SevResult<()> {
+        //test for debug encryption disabled or non-es boot
+        if !self.encryption || !self.es {
+            return Ok(());
+        }
+
+        if self.state != State::LaunchUpdate {
+            return Err(SevError::InvalidPlatformState);
+        }
+
+        let mut msg = kvm_sev_cmd {
+            id: sev_cmd_id_KVM_SEV_LAUNCH_UPDATE_VMSA,
+            data: 0,
+            sev_fd: self.fd.as_raw_fd() as _,
+            ..Default::default()
+        };
+
+        info!("Encrypting VM save area...");
+
+        self.sev_ioctl(&mut msg).unwrap();
         Ok(())
     }
 
