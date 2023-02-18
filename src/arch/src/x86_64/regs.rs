@@ -100,7 +100,11 @@ impl fmt::Display for SetupRegistersError {
 /// # Errors
 ///
 /// When [`kvm_ioctls::ioctls::vcpu::VcpuFd::set_regs`] errors.
-pub fn setup_regs(vcpu: &VcpuFd, boot_ip: u64) -> std::result::Result<(), SetupRegistersError> {
+pub fn setup_regs(
+    vcpu: &VcpuFd,
+    boot_ip: u64,
+    kernel_len: u64,
+) -> std::result::Result<(), SetupRegistersError> {
     let regs: kvm_regs = kvm_regs {
         rflags: 0x0000_0000_0000_0002u64,
         rip: boot_ip,
@@ -113,7 +117,8 @@ pub fn setup_regs(vcpu: &VcpuFd, boot_ip: u64) -> std::result::Result<(), SetupR
         rbp: super::layout::BOOT_STACK_POINTER as u64,
         // Must point to zero page address per Linux ABI. This is x86_64 specific.
         rsi: super::layout::ZERO_PAGE_START as u64,
-        rbx: super::layout::PVH_INFO_START as u64, 
+        rbx: super::layout::PVH_INFO_START as u64,
+        rcx: kernel_len,
         ..Default::default()
     };
 

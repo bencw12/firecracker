@@ -254,6 +254,7 @@ impl KvmVcpu {
         vcpu_config: &VcpuConfig,
         mut cpuid: CpuId,
         sev: bool,
+        kernel_len: u64,
     ) -> std::result::Result<(), KvmVcpuConfigureError> {
         let cpuid_vm_spec = VmSpec::new(self.index, vcpu_config.vcpu_count, vcpu_config.smt)
             .map_err(KvmVcpuConfigureError::VmSpec)?;
@@ -329,7 +330,7 @@ impl KvmVcpu {
         // save is `architectural MSRs` + `MSRs inferred through CPUID` + `other
         // MSRs defined by the template`
         arch::x86_64::msr::set_msrs(&self.fd, &msr_boot_entries)?;
-        arch::x86_64::regs::setup_regs(&self.fd, kernel_start_addr.raw_value() as u64)?;
+        arch::x86_64::regs::setup_regs(&self.fd, kernel_start_addr.raw_value() as u64, kernel_len)?;
         arch::x86_64::regs::setup_fpu(&self.fd)?;
         arch::x86_64::regs::setup_sregs(guest_mem, &self.fd, sev)?;
         arch::x86_64::interrupts::set_lint(&self.fd)?;
