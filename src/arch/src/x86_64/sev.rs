@@ -419,6 +419,11 @@ impl Sev {
             .read_exact_from(GuestAddress(0x200000), kernel_file, len.try_into().unwrap())
             .unwrap();
 
+        let addr = guest_mem.get_host_address(GuestAddress(0x200000)).unwrap() as u64;
+
+        self.launch_update_data(addr, len.try_into().unwrap())
+            .unwrap();
+
         Ok(len)
     }
 
