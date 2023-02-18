@@ -33,6 +33,7 @@ pub mod vmm_config;
 mod vstate;
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::os::unix::io::AsRawFd;
 use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, Barrier, Mutex};
@@ -56,7 +57,7 @@ use snapshot::Persist;
 use userfaultfd::Uffd;
 use utils::epoll::EventSet;
 use utils::eventfd::EventFd;
-use vm_memory::{GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 use vstate::vcpu::{self, KvmVcpuConfigureError, StartThreadedError, VcpuSendEventError};
 
 #[cfg(target_arch = "x86_64")]
@@ -643,13 +644,17 @@ impl Vmm {
     }
 
     /// Initializes SEV
-    pub fn setup_sev(&mut self, path: &String) -> Result<()> {
+    pub fn setup_sev(&mut self, fw_path: &String, mut kernel_file: File) -> Result<u64> {
         if let Some(sev) = self.sev.as_mut() {
             // sev.sev_init().map_err(|err| Error::SevSetup(err))?;
-            sev.load_firmware(path, &self.guest_memory)
+            sev.load_firmware(fw_path, &self.guest_memory)
                 .map_err(|err| Error::SevSetup(err))?;
+
+            return Ok(sev
+                .load_kernel(&mut kernel_file, &self.guest_memory)
+                .map_err(|err| Error::SevSetup(err))?);
         }
-        Ok(())
+        Ok(0u64)
     }
 
     /// Finishes SEV boot
@@ -662,6 +667,35 @@ impl Vmm {
             sev.sev_launch_finish()
                 .map_err(|err| Error::SevFinish(err))?;
         }
+        Ok(())
+    }
+
+    ///Encrypts initial page tables
+    pub fn encrypt_pagetables(&mut self) -> Result<()> {
+        const PML4_START: u64 = 0x9000;
+        const PDPTE_START: u64 = 0xa000;
+        const PDE_START: u64 = 0xb000;
+
+        if let Some(sev) = self.sev.as_mut() {
+            let boot_pml4_addr = self
+                .guest_memory
+                .get_host_address(GuestAddress(PML4_START))
+                .unwrap() as u64;
+            sev.launch_update_data(boot_pml4_addr, 16).unwrap();
+
+            let boot_pdpte_addr = self
+                .guest_memory
+                .get_host_address(GuestAddress(PDPTE_START))
+                .unwrap() as u64;
+            sev.launch_update_data(boot_pdpte_addr, 16).unwrap();
+
+            let boot_pde_addr = self
+                .guest_memory
+                .get_host_address(GuestAddress(PDE_START))
+                .unwrap() as u64;
+            sev.launch_update_data(boot_pde_addr, 4096).unwrap();
+        }
+
         Ok(())
     }
 

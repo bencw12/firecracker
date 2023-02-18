@@ -405,6 +405,23 @@ impl Sev {
         Ok(())
     }
 
+    ///copy bzimage to guest memory
+    pub fn load_kernel(
+        &mut self,
+        kernel_file: &mut File,
+        guest_mem: &GuestMemoryMmap,
+    ) -> SevResult<u64> {
+        kernel_file.seek(SeekFrom::Start(0)).unwrap();
+        let len = kernel_file.seek(SeekFrom::End(0)).unwrap();
+        kernel_file.seek(SeekFrom::Start(0)).unwrap();
+
+        guest_mem
+            .read_exact_from(GuestAddress(0x200000), kernel_file, len.try_into().unwrap())
+            .unwrap();
+
+        Ok(len)
+    }
+
     ///Load SEV firmware
     pub fn load_firmware(&mut self, path: &String, guest_mem: &GuestMemoryMmap) -> SevResult<()> {
         let path = PathBuf::from(path);

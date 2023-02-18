@@ -405,10 +405,18 @@ pub fn build_microvm_for_boot(
         t_init.clone(),
         policy,
     )?;
-
+    let mut kernel_len: u64 = 0;
     #[cfg(target_arch = "x86_64")]
     if sev_enabled {
-        vmm.setup_sev(&vm_resources.sev.as_ref().unwrap().firmware_path)
+        kernel_len = vmm
+            .setup_sev(
+                &vm_resources.sev.as_ref().unwrap().firmware_path,
+                boot_config
+                    .kernel_file
+                    .try_clone()
+                    .map_err(|err| StartMicrovmError::Internal(Error::KernelFile(err)))
+                    .unwrap(),
+            )
             .unwrap();
     }
 
@@ -458,10 +466,12 @@ pub fn build_microvm_for_boot(
         entry_addr,
         &initrd,
         boot_cmdline,
+        kernel_len,
     )?;
 
     #[cfg(target_arch = "x86_64")]
     if sev_enabled {
+        //vmm.encrypt_pagetables().unwrap();
         vmm.finish_sev().unwrap();
     }
 
@@ -945,6 +955,7 @@ pub fn configure_system_for_boot(
     entry_addr: GuestAddress,
     initrd: &Option<InitrdConfig>,
     boot_cmdline: LoaderKernelCmdline,
+    kernel_len: u64,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
     #[cfg(target_arch = "x86_64")]
@@ -957,6 +968,7 @@ pub fn configure_system_for_boot(
                     &vcpu_config,
                     vmm.vm.supported_cpuid().clone(),
                     vmm.sev.is_some(),
+                    kernel_len,
                 )
                 .map_err(Error::VcpuConfigure)
                 .map_err(Internal)?;
