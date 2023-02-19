@@ -415,14 +415,19 @@ impl Sev {
         let len = kernel_file.seek(SeekFrom::End(0)).unwrap();
         kernel_file.seek(SeekFrom::Start(0)).unwrap();
 
+        //Load bzimage at 16mib
         guest_mem
-            .read_exact_from(GuestAddress(0x200000), kernel_file, len.try_into().unwrap())
+            .read_exact_from(
+                GuestAddress(0x1000000),
+                kernel_file,
+                len.try_into().unwrap(),
+            )
             .unwrap();
 
-        let addr = guest_mem.get_host_address(GuestAddress(0x200000)).unwrap() as u64;
+        // let addr = guest_mem.get_host_address(GuestAddress(0x200000)).unwrap() as u64;
 
-        self.launch_update_data(addr, len.try_into().unwrap())
-            .unwrap();
+        // self.launch_update_data(addr, len.try_into().unwrap())
+        //     .unwrap();
 
         Ok(len)
     }
