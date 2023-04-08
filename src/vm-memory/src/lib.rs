@@ -5,7 +5,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
-use std::io::{Error as IoError};
+use std::io::Error as IoError;
 use std::os::unix::io::AsRawFd;
 
 use libc::c_void;
@@ -79,22 +79,24 @@ fn build_guarded_region(
 
     //allign guest mem to page size so hugepages work
     if (guard_addr as u64) + 4096 % page_size as u64 != 0 {
-
-
-        let aligned_addr = ((guard_addr as u64) + 4096) + (page_size as u64 - (((guard_addr as u64) + 4096) % page_size as u64));
+        let aligned_addr = ((guard_addr as u64) + 4096)
+            + (page_size as u64 - (((guard_addr as u64) + 4096) % page_size as u64));
 
         if page_size == 2048 * 1024 {
             //clean up the guard pages and set them back to 4k (messy fix)
             unsafe {
-                let front_remain = (aligned_addr as usize + 2 * 1024 * 1024) - guard_addr as usize - 4096;
+                let front_remain =
+                    (aligned_addr as usize + 2 * 1024 * 1024) - guard_addr as usize - 4096;
                 let back_remain = (page_size * 2) - front_remain;
                 libc::munmap(guard_addr, front_remain);
-                libc::munmap((aligned_addr as usize + 2 * 1024 * 1024 + size + 4096) as *mut c_void, back_remain - 4096);
+                libc::munmap(
+                    (aligned_addr as usize + 2 * 1024 * 1024 + size + 4096) as *mut c_void,
+                    back_remain - 4096,
+                );
             }
         }
 
         guard_addr = aligned_addr as *mut c_void;
-
     }
 
     if guard_addr == libc::MAP_FAILED {
@@ -128,8 +130,6 @@ fn build_guarded_region(
         return Err(MmapRegionError::Mmap(IoError::last_os_error()));
     }
 
-  
-
     let bitmap = match track_dirty_pages {
         true => Some(AtomicBitmap::with_len(size)),
         false => None,
@@ -159,9 +159,15 @@ pub fn create_guest_memory(
             Some(_) => libc::MAP_NORESERVE | libc::MAP_PRIVATE,
         };
 
-        let mmap_region =
-            build_guarded_region(region.0.clone(), region.2, prot, flags, track_dirty_pages, hugepages)
-                .map_err(Error::MmapRegion)?;
+        let mmap_region = build_guarded_region(
+            region.0.clone(),
+            region.2,
+            prot,
+            flags,
+            track_dirty_pages,
+            hugepages,
+        )
+        .map_err(Error::MmapRegion)?;
 
         mmap_regions.push(GuestRegionMmap::new(mmap_region, region.1)?);
     }

@@ -88,7 +88,7 @@ impl Default for VmConfig {
             smt: false,
             cpu_template: CpuFeaturesTemplate::None,
             track_dirty_pages: false,
-            hugepages: false, 
+            hugepages: false,
         }
     }
 }
@@ -99,7 +99,12 @@ impl fmt::Display for VmConfig {
             f,
             "{{ \"vcpu_count\": {:?}, \"mem_size_mib\": {:?}, \"smt\": {:?}, \"cpu_template\": \
              {:?}, \"track_dirty_pages\": {:?}, \"huge_pages\": {:?} }}",
-            self.vcpu_count, self.mem_size_mib, self.smt, self.cpu_template, self.track_dirty_pages, self.hugepages
+            self.vcpu_count,
+            self.mem_size_mib,
+            self.smt,
+            self.cpu_template,
+            self.track_dirty_pages,
+            self.hugepages
         )
     }
 }
@@ -172,7 +177,7 @@ impl From<VmConfig> for VmUpdateConfig {
             smt: Some(cfg.smt),
             cpu_template: Some(cfg.cpu_template),
             track_dirty_pages: Some(cfg.track_dirty_pages),
-            hugepages: Some(cfg.hugepages)
+            hugepages: Some(cfg.hugepages),
         }
     }
 }

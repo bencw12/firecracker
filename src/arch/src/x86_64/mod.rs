@@ -24,7 +24,9 @@ use linux_loader::loader::bootparam::boot_params;
 use linux_loader::loader::elf::start_info::{
     hvm_memmap_table_entry, hvm_modlist_entry, hvm_start_info,
 };
-use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion, ByteValued};
+use vm_memory::{
+    Address, ByteValued, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion,
+};
 
 use crate::InitrdConfig;
 
@@ -201,7 +203,9 @@ pub fn configure_system(
         .map_err(|_| Error::ZeroPageSetup);
 
     if let Some(sev) = sev {
-        let addr = guest_mem.get_host_address(boot_params.header_start).unwrap() as u64;
+        let addr = guest_mem
+            .get_host_address(boot_params.header_start)
+            .unwrap() as u64;
         let len = boot_params.header.len();
         sev.launch_update_data(addr, len as u32).unwrap();
     }

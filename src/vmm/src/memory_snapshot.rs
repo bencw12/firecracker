@@ -186,7 +186,8 @@ impl SnapshotMemory for GuestMemoryMmap {
             regions.push((f, GuestAddress(region.base_address), region.size));
         }
 
-        vm_memory::create_guest_memory(&regions, track_dirty_pages, false).map_err(Error::CreateMemory)
+        vm_memory::create_guest_memory(&regions, track_dirty_pages, false)
+            .map_err(Error::CreateMemory)
     }
 }
 

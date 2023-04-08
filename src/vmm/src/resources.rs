@@ -1314,7 +1314,7 @@ mod tests {
             smt: Some(true),
             cpu_template: Some(CpuFeaturesTemplate::T2),
             track_dirty_pages: Some(false),
-            hugepages: Some(false)
+            hugepages: Some(false),
         };
 
         assert_ne!(
