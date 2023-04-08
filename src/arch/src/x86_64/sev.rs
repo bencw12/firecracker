@@ -3,7 +3,7 @@ use std::{
     convert::TryInto,
     fmt::Display,
     fs::{File, OpenOptions},
-    io::{Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom},
     os::unix::prelude::AsRawFd,
     path::PathBuf,
     sync::Arc,
@@ -210,7 +210,11 @@ impl Sev {
     }
 
     /// Initialize SEV platform
-    pub fn sev_init(&mut self) -> SevResult<()> {
+    pub fn sev_init(
+        &mut self,
+        session: &mut Option<File>,
+        dh_cert: &mut Option<File>,
+    ) -> SevResult<()> {
         if !self.encryption {
             return Ok(());
         }
@@ -240,10 +244,14 @@ impl Sev {
         self.state = State::Init;
         info!("Done Sending SEV_INIT");
 
-        self.sev_launch_start()
+        self.sev_launch_start(session, dh_cert)
     }
     /// Get SEV guest handle
-    fn sev_launch_start(&mut self) -> SevResult<()> {
+    fn sev_launch_start(
+        &mut self,
+        session: &mut Option<File>,
+        dh_cert: &mut Option<File>,
+    ) -> SevResult<()> {
         if !self.encryption {
             return Ok(());
         }
@@ -253,11 +261,41 @@ impl Sev {
             return Err(SevError::InvalidPlatformState);
         }
 
+        let dh_cert_data = match dh_cert {
+            None => None,
+            Some(file) => {
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf).unwrap();
+                Some(buf)
+            }
+        };
+
+        let (dh_cert_paddr, dh_cert_len) = match dh_cert_data.as_ref() {
+            None => (0, 0),
+            Some(buf) => (buf.as_ptr() as u64, buf.len() as u32),
+        };
+
+        let session_data = match session {
+            None => None,
+            Some(file) => {
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf).unwrap();
+                Some(buf)
+            }
+        };
+
+        let (session_paddr, session_len) = match session_data.as_ref() {
+            None => (0, 0),
+            Some(buf) => (buf.as_ptr() as u64, buf.len() as u32),
+        };
+
         let start = kvm_sev_launch_start {
             handle: 0,
             policy: self.policy,
-            //The remaining 4 fields are optional but should be explored later
-            ..Default::default()
+            session_uaddr: session_paddr,
+            session_len: session_len,
+            dh_uaddr: dh_cert_paddr,
+            dh_len: dh_cert_len,
         };
 
         let mut msg = kvm_sev_cmd {

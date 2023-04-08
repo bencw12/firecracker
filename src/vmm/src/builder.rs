@@ -98,6 +98,10 @@ pub enum StartMicrovmError {
     RestoreMicrovmState(MicrovmStateError),
     /// Unable to set VmResources.
     SetVmResources(VmConfigError),
+    /// Cannot read guest owner DH key
+    ReadDHCert(io::Error),
+    /// Cannot read guest session data
+    ReadSession(io::Error),
 }
 impl std::error::Error for StartMicrovmError {}
 /// It's convenient to automatically convert `linux_loader::cmdline::Error`s
@@ -191,6 +195,8 @@ impl Display for StartMicrovmError {
             }
             RestoreMicrovmState(err) => write!(f, "Cannot restore microvm state. Error: {}", err),
             SetVmResources(err) => write!(f, "Cannot set vm resources. Error: {}", err),
+            ReadDHCert(err) => write!(f, "Cannot read guest owner DH public key: {}", err),
+            ReadSession(err) => write!(f, "Cannot read guest owner session data: {}", err),
         }
     }
 }
@@ -253,6 +259,8 @@ fn create_vmm_and_vcpus(
     encryption: bool,
     timestamp: TimestampUs,
     policy: u32,
+    dh_cert: &mut Option<std::fs::File>,
+    session: &mut Option<std::fs::File>,
 ) -> std::result::Result<(Vmm, Vec<Vcpu>), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -262,7 +270,7 @@ fn create_vmm_and_vcpus(
     let mut sev = None;
     if sev_enabled {
         let mut sev_dev = Sev::new(vm.fd().clone(), encryption, timestamp, policy);
-        sev_dev.sev_init().unwrap();
+        sev_dev.sev_init(session, dh_cert).unwrap();
         sev = Some(sev_dev);
     }
 
@@ -392,6 +400,22 @@ pub fn build_microvm_for_boot(
         Some(cfg) => cfg.policy,
     };
 
+    let mut dh_cert: Option<std::fs::File> = match &vm_resources.sev {
+        None => None,
+        Some(cfg) => match &cfg.dh_cert {
+            None => None,
+            Some(path) => Some(std::fs::File::open(path).map_err(|err| ReadDHCert(err))?),
+        },
+    };
+
+    let mut session: Option<std::fs::File> = match &vm_resources.sev {
+        None => None,
+        Some(cfg) => match &cfg.session_path {
+            None => None,
+            Some(path) => Some(std::fs::File::open(path).map_err(|err| ReadSession(err))?),
+        },
+    };
+
     let (mut vmm, mut vcpus) = create_vmm_and_vcpus(
         instance_info,
         event_manager,
@@ -404,6 +428,8 @@ pub fn build_microvm_for_boot(
         encryption,
         t_init.clone(),
         policy,
+        &mut dh_cert,
+        &mut session,
     )?;
     let mut kernel_len: u64 = 0;
     #[cfg(target_arch = "x86_64")]
@@ -598,6 +624,8 @@ pub fn build_microvm_from_snapshot(
         false,
         TimestampUs::default(),
         0,
+        &mut None,
+        &mut None,
     )?;
 
     #[cfg(target_arch = "x86_64")]

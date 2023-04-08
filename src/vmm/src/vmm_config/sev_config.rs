@@ -10,6 +10,10 @@ pub struct SevConfig {
     pub hashes_path: String,
     /// Whether or not to enable encryption
     pub encryption: bool,
+    /// Path to guest launch blob
+    pub session_path: Option<String>,
+    /// Path to guest DH public key
+    pub dh_cert: Option<String>,
     /// Guest policy
     pub policy: u32,
 }
