@@ -149,7 +149,7 @@ pub struct Sev {
     handle: u32,
     policy: u32,
     state: State,
-    measure: Vec<u8>,
+    measure: [u8; 48],
     timestamp: TimestampUs,
     /// position of the Cbit
     pub cbitpos: u32,
@@ -188,7 +188,7 @@ impl Sev {
             handle: 0,
             policy: policy,
             state: State::UnInit,
-            measure: Vec::with_capacity(48),
+            measure: [0u8; 48],
             cbitpos: ebx,
             encryption: encryption,
             timestamp,
@@ -313,7 +313,7 @@ impl Sev {
         Ok(())
     }
 
-    /// Encrypt VMCA
+    /// Encrypt VMSA
     pub fn launch_update_vmsa(&mut self) -> SevResult<()> {
         //test for debug encryption disabled or non-es boot
         if !self.encryption || !self.es {
@@ -338,18 +338,28 @@ impl Sev {
     }
 
     /// Encrypt region
-    pub fn launch_update_data(&mut self, mut addr: u64, mut len: u32) -> SevResult<()> {
+    pub fn launch_update_data(
+	&mut self,
+	guest_addr: GuestAddress,
+	len: u32,
+	guest_mem: &GuestMemoryMmap
+    ) -> SevResult<()> {
         if !self.encryption {
             return Ok(());
         }
 
-        if addr % 16 != 0 {
-            addr -= addr % 16;
-            len += (addr % 16) as u32;
+	let addr = guest_mem.get_host_address(guest_addr).unwrap() as u64;
+
+	let mut aligned_addr = addr;
+	let mut aligned_len = len;
+	
+        if aligned_addr % 16 != 0 {
+            aligned_addr -= addr % 16;
+            aligned_len += (addr % 16) as u32;
         }
 
-        if len % 16 != 0 {
-            len = len - (len % 16) + 16;
+        if aligned_len % 16 != 0 {
+            aligned_len = aligned_len - (aligned_len % 16) + 16;
         }
 
         if self.state != State::LaunchUpdate {
@@ -357,9 +367,32 @@ impl Sev {
         }
 
         let region = kvm_sev_launch_update_data {
-            uaddr: addr,
-            len: len,
+            uaddr: aligned_addr,
+            len: aligned_len,
         };
+		
+	//fill zeros between aligned (down) address and original address
+	if aligned_addr < addr {
+	    let n = addr - aligned_addr;
+	    let mut buf = vec![0; n as usize];
+	    guest_mem.read_slice(
+		&mut buf.as_mut_slice(),
+		GuestAddress(guest_addr.0 - n),
+	    ).unwrap();
+	}
+
+	let region_end = aligned_addr + aligned_len as u64;
+	let original_end = addr + len as u64;
+
+	//fill zeros between original end and end of aligned region
+	if region_end > original_end {
+	    let n = region_end - original_end;
+	    let mut buf = vec![0; n as usize];
+	    guest_mem.read_slice(
+		&mut buf.as_mut_slice(),
+		GuestAddress(guest_addr.0 + len as u64),
+	    ).unwrap();
+	}
 
         let mut msg = kvm_sev_cmd {
             id: sev_cmd_id_KVM_SEV_LAUNCH_UPDATE_DATA,
@@ -391,16 +424,10 @@ impl Sev {
             return Err(SevError::InvalidPlatformState);
         }
 
-        let len = MEASUREMENT_LEN;
-
-        for _ in 0..len as usize {
-            self.measure.push(0);
-        }
-
         let mut measure: kvm_sev_launch_measure = Default::default();
 
         measure.uaddr = self.measure.as_ptr() as _;
-        measure.len = len;
+        measure.len = MEASUREMENT_LEN;
 
         let mut msg = kvm_sev_cmd {
             id: sev_cmd_id_KVM_SEV_LAUNCH_MEASURE,
@@ -409,7 +436,7 @@ impl Sev {
             ..Default::default()
         };
 
-        self.sev_ioctl(&mut msg).unwrap();
+	self.sev_ioctl(&mut msg).unwrap();
 
         self.state = State::LaunchSecret;
         info!("Done Sending LAUNCH_MEASURE");
@@ -482,8 +509,6 @@ impl Sev {
             .read_exact_from(FIRMWARE_ADDR, &mut f_firmware, len.try_into().unwrap())
             .unwrap();
 
-        let addr = guest_mem.get_host_address(FIRMWARE_ADDR).unwrap() as u64;
-
         let now_tm_us = TimestampUs::default();
         let real = now_tm_us.time_us - self.timestamp.time_us;
         let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
@@ -491,7 +516,7 @@ impl Sev {
             "Pre-encrypting firmware: {:>06} us, {:>06} CPU us",
             real, cpu
         );
-        self.launch_update_data(addr, len.try_into().unwrap())?;
+        self.launch_update_data(FIRMWARE_ADDR, len.try_into().unwrap(), guest_mem)?;
         let now_tm_us = TimestampUs::default();
         let real = now_tm_us.time_us - self.timestamp.time_us;
         let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;

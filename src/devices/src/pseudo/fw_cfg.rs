@@ -12,7 +12,7 @@ use linux_loader::{
     elf::{self, elf64_hdr, elf64_phdr},
 };
 use logger::{info, warn};
-use vm_memory::{ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
+use vm_memory::{ByteValued, Bytes, GuestAddress, GuestMemoryMmap};
 
 use crate::BusDevice;
 
@@ -194,11 +194,12 @@ impl FwCfg {
             .read_exact_from(hashes_base_addr, &mut hashes, num_hashes as usize * 32)
             .unwrap();
 
-        let addr = self.mem.get_host_address(hashes_base_addr).unwrap() as u64;
-
         if let Some(sev) = sev.as_mut() {
-            sev.launch_update_data(addr, (num_hashes * 32).try_into().unwrap())
-                .unwrap();
+            sev.launch_update_data(
+		hashes_base_addr,
+		(num_hashes * 32).try_into().unwrap(),
+		&self.mem
+	    ).unwrap();
         }
     }
 

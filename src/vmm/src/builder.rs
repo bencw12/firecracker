@@ -497,7 +497,6 @@ pub fn build_microvm_for_boot(
 
     #[cfg(target_arch = "x86_64")]
     if sev_enabled {
-        //vmm.encrypt_pagetables().unwrap();
         vmm.finish_sev().unwrap();
     }
 
@@ -1018,10 +1017,9 @@ pub fn configure_system_for_boot(
         #[cfg(target_arch = "x86_64")]
         if let Some(sev) = vmm.sev.as_mut() {
             sev.launch_update_data(
-                vmm.guest_memory
-                    .get_host_address(GuestAddress(arch::x86_64::layout::CMDLINE_START))
-                    .unwrap() as u64,
+		GuestAddress(arch::x86_64::layout::CMDLINE_START),
                 boot_cmdline.as_cstring().unwrap().as_bytes().len() as u32,
+		&vmm.guest_memory,
             )
             .unwrap();
         }

@@ -15,7 +15,6 @@ use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemo
 use crate::IRQ_MAX;
 
 use super::sev::Sev;
-
 // This is a workaround to the Rust enforcement specifying that any implementation of a foreign
 // trait (in this case `ByteValued`) where:
 // * the type that is implementing the trait is foreign or
@@ -283,12 +282,11 @@ pub fn setup_mptable(mem: &GuestMemoryMmap, num_cpus: u8, sev: &mut Option<Sev>)
         mem.write_obj(mpc_table, table_base)
             .map_err(|_| Error::WriteMpcTable)?;
     }
-
+    
     // Try just using mp_size and base_mp
     if let Some(sev) = sev {
-        let mp_addr = mem.get_host_address(GuestAddress(MPTABLE_START)).unwrap() as u64;
         let len = mp_size;
-        sev.launch_update_data(mp_addr, len as u32).unwrap();
+        sev.launch_update_data(GuestAddress(MPTABLE_START), len as u32, mem).unwrap();
     }
 
     Ok(())
