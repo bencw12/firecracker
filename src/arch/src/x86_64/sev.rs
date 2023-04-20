@@ -11,10 +11,11 @@ use std::{
 
 use kvm_bindings::{
     kvm_sev_cmd, kvm_sev_launch_measure, kvm_sev_launch_start, kvm_sev_launch_update_data,
-    kvm_snp_init, sev_cmd_id_KVM_SEV_ES_INIT, sev_cmd_id_KVM_SEV_INIT,
+    kvm_sev_snp_launch_start, kvm_snp_init, sev_cmd_id_KVM_SEV_ES_INIT, sev_cmd_id_KVM_SEV_INIT,
     sev_cmd_id_KVM_SEV_LAUNCH_FINISH, sev_cmd_id_KVM_SEV_LAUNCH_MEASURE,
     sev_cmd_id_KVM_SEV_LAUNCH_START, sev_cmd_id_KVM_SEV_LAUNCH_UPDATE_DATA,
     sev_cmd_id_KVM_SEV_LAUNCH_UPDATE_VMSA, sev_cmd_id_KVM_SEV_SNP_INIT,
+    sev_cmd_id_KVM_SEV_SNP_LAUNCH_START,
 };
 use kvm_ioctls::VmFd;
 use logger::info;
@@ -349,6 +350,31 @@ impl Sev {
     }
 
     fn snp_launch_start(&mut self) -> SevResult<()> {
+        info!("Sending SNP_LAUNCH_START");
+
+        if self.state != State::Init {
+            return Err(SevError::InvalidPlatformState);
+        }
+
+        // reserved bit (17) and SMT (16)
+        let temp_policy = (1 << 16) | (1 << 17);
+
+        let start = kvm_sev_snp_launch_start {
+            policy: temp_policy,
+            ..Default::default()
+        };
+
+        let mut cmd = kvm_sev_cmd {
+            id: sev_cmd_id_KVM_SEV_SNP_LAUNCH_START,
+            data: &start as *const kvm_sev_snp_launch_start as _,
+            sev_fd: self.fd.as_raw_fd() as _,
+            ..Default::default()
+        };
+
+        self.sev_ioctl(&mut cmd)?;
+
+        self.state = State::LaunchUpdate;
+        info!("SNP_LAUNCH_START done");
         Ok(())
     }
 
