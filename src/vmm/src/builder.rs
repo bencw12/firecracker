@@ -256,6 +256,7 @@ fn create_vmm_and_vcpus(
     hugepages: bool,
     vcpu_count: u8,
     sev_enabled: bool,
+    snp: bool,
     encryption: bool,
     timestamp: TimestampUs,
     policy: u32,
@@ -269,8 +270,13 @@ fn create_vmm_and_vcpus(
 
     let mut sev = None;
     if sev_enabled {
-        let mut sev_dev = Sev::new(vm.fd().clone(), encryption, timestamp, policy);
-        sev_dev.sev_init(session, dh_cert).unwrap();
+        let mut sev_dev = Sev::new(vm.fd().clone(), snp, encryption, timestamp, policy);
+        if !snp {
+            sev_dev.sev_init(session, dh_cert).unwrap();
+        } else {
+            sev_dev.snp_init().unwrap();
+        }
+
         sev = Some(sev_dev);
     }
 
@@ -400,6 +406,11 @@ pub fn build_microvm_for_boot(
         Some(cfg) => cfg.policy,
     };
 
+    let snp = match &vm_resources.sev {
+        None => false,
+        Some(cfg) => cfg.snp,
+    };
+
     let mut dh_cert: Option<std::fs::File> = match &vm_resources.sev {
         None => None,
         Some(cfg) => match &cfg.dh_cert {
@@ -425,6 +436,7 @@ pub fn build_microvm_for_boot(
         hugepages,
         vcpu_config.vcpu_count,
         sev_enabled,
+        snp,
         encryption,
         t_init.clone(),
         policy,
@@ -619,6 +631,7 @@ pub fn build_microvm_from_snapshot(
         track_dirty_pages,
         false,
         vcpu_count,
+        false,
         false,
         false,
         TimestampUs::default(),
@@ -1017,9 +1030,9 @@ pub fn configure_system_for_boot(
         #[cfg(target_arch = "x86_64")]
         if let Some(sev) = vmm.sev.as_mut() {
             sev.launch_update_data(
-		GuestAddress(arch::x86_64::layout::CMDLINE_START),
+                GuestAddress(arch::x86_64::layout::CMDLINE_START),
                 boot_cmdline.as_cstring().unwrap().as_bytes().len() as u32,
-		&vmm.guest_memory,
+                &vmm.guest_memory,
             )
             .unwrap();
         }
