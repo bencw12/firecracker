@@ -282,11 +282,12 @@ pub fn setup_mptable(mem: &GuestMemoryMmap, num_cpus: u8, sev: &mut Option<Sev>)
         mem.write_obj(mpc_table, table_base)
             .map_err(|_| Error::WriteMpcTable)?;
     }
-    
+
     // Try just using mp_size and base_mp
     if let Some(sev) = sev {
         let len = mp_size;
-        sev.launch_update_data(GuestAddress(MPTABLE_START), len as u32, mem).unwrap();
+        sev.launch_update_data(GuestAddress(MPTABLE_START), len as u32, mem)
+            .unwrap();
     }
 
     Ok(())

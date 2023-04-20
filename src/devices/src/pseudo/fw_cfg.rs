@@ -196,10 +196,11 @@ impl FwCfg {
 
         if let Some(sev) = sev.as_mut() {
             sev.launch_update_data(
-		hashes_base_addr,
-		(num_hashes * 32).try_into().unwrap(),
-		&self.mem
-	    ).unwrap();
+                hashes_base_addr,
+                (num_hashes * 32).try_into().unwrap(),
+                &self.mem,
+            )
+            .unwrap();
         }
     }
 

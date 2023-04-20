@@ -198,13 +198,14 @@ pub fn configure_system(
     }
 
     let boot_params = BootParams::new(&params, GuestAddress(layout::ZERO_PAGE_START));
-    
+
     let result = LinuxBootConfigurator::write_bootparams(&boot_params, guest_mem)
         .map_err(|_| Error::ZeroPageSetup);
 
     if let Some(sev) = sev {
         let len = boot_params.header.len();
-        sev.launch_update_data(boot_params.header_start, len as u32, guest_mem).unwrap();
+        sev.launch_update_data(boot_params.header_start, len as u32, guest_mem)
+            .unwrap();
     }
 
     result
