@@ -16,4 +16,6 @@ pub struct SevConfig {
     pub dh_cert: Option<String>,
     /// Guest policy
     pub policy: u32,
+    /// SNP
+    pub snp: bool,
 }
