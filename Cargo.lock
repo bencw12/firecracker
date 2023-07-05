@@ -561,7 +561,7 @@ dependencies = [
 [[package]]
 name = "kvm-bindings"
 version = "0.5.0"
-source = "git+https://github.com/bencw12/kvm-bindings?branch=snp-host-v0.5.0-1#15776cdff7772daf9f8444fc2b7d7be94147ec5d"
+source = "git+https://github.com/bencw12/kvm-bindings?branch=snp-host-v0.5.0-1#701661e5d65c82051e0c265eecf34335f64642a4"
 dependencies = [
  "versionize",
  "versionize_derive",
@@ -571,7 +571,7 @@ dependencies = [
 [[package]]
 name = "kvm-ioctls"
 version = "0.11.0"
-source = "git+https://github.com/bencw12/kvm-ioctls?branch=snp-host-5.19-fix#eb29b10739a03906317d71ee2b800da77356da17"
+source = "git+https://github.com/bencw12/kvm-ioctls?branch=snp-host-5.19-fix#ad5fa7b2ef1b73e11c1f7797ecd86ed2c16c0ba8"
 dependencies = [
  "kvm-bindings",
  "libc",

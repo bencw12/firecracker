@@ -7,18 +7,20 @@
 
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 use std::{fmt, result};
 
 use arch::x86_64::interrupts;
 use arch::x86_64::msr::SetMSRsError;
 use arch::x86_64::regs::{SetupFpuError, SetupRegistersError, SetupSpecialRegistersError};
+use arch::x86_64::sev::Sev;
 use cpuid::{c3, filter_cpuid, msrs_to_save_by_cpuid, t2, t2s, VmSpec};
 use kvm_bindings::{
     kvm_debugregs, kvm_lapic_state, kvm_mp_state, kvm_regs, kvm_sregs, kvm_vcpu_events, kvm_xcrs,
-    kvm_xsave, CpuId, Msrs, KVM_MAX_MSR_ENTRIES,
+    kvm_xsave, CpuId, Msrs, KVM_MAX_MSR_ENTRIES
 };
-use kvm_ioctls::{VcpuExit, VcpuFd};
-use logger::{error, warn, IncMetric, METRICS};
+use kvm_ioctls::{VcpuExit, VcpuFd, VmFd};
+use logger::{error, warn, info, IncMetric, METRICS};
 use versionize::{VersionMap, Versionize, VersionizeError, VersionizeResult};
 use versionize_derive::Versionize;
 use vm_memory::{Address, GuestAddress, GuestMemoryMmap};
@@ -521,7 +523,7 @@ impl KvmVcpu {
     /// Runs the vCPU in KVM context and handles the kvm exit reason.
     ///
     /// Returns error or enum specifying whether emulation was handled or interrupted.
-    pub fn run_arch_emulation(&self, exit: VcpuExit) -> super::Result<VcpuEmulation> {
+    pub fn run_arch_emulation(&self, exit: VcpuExit, vm_fd: &Arc<VmFd>, guest_mem: &GuestMemoryMmap) -> super::Result<VcpuEmulation> {
         match exit {
             VcpuExit::IoIn(addr, data) => {
                 if let Some(pio_bus) = &self.pio_bus {
@@ -536,6 +538,40 @@ impl KvmVcpu {
                     METRICS.vcpu.exit_io_out.inc();
                 }
                 Ok(VcpuEmulation::Handled)
+            }
+            VcpuExit::MemoryFault(flags, gpa, size) => {
+                // info!("memory fault: flags=0x{:x}, gpa=0x{:x}, size=0x{:x}", flags, gpa, size);
+
+                Sev::set_page_state(vm_fd, gpa >> 12, size, flags == 8);
+
+                Ok(VcpuEmulation::Handled)
+            }
+            VcpuExit::Vmgexit(ghcb_msr, error) => {
+                // info!("vmgexit, ghcb msr: 0x{:x}, error: {}", ghcb_msr, error);
+                //might add this to the kernel instead of doing it here for performance
+                let mask = 0xffff;
+                let req = ghcb_msr & 0xfff;
+                // if the request is 0, the ghcb_msr value is the gpa of the ghcb page in the guest
+                if req == 0 {
+                    info!("vmgexit, ghcb msr: 0x{:x}, error: {}", ghcb_msr, error);
+                    Sev::handle_vmgexit(ghcb_msr, guest_mem, vm_fd).unwrap();
+                    return Ok(VcpuEmulation::Handled);
+                }
+                if req == 0x014 {
+                    // info!("vmgexit msr protocol, ghcb_msr = 0x{:x}", ghcb_msr);
+                    let op = (ghcb_msr >> 52) & mask;
+                    let (size, pg_shift) = match ghcb_msr >> 56 {
+                        0 => (0x1000, 12),
+                        1 => (0x200000, 21),
+                        _ => panic!("invalid page size")
+                    };
+                    let gfn = (ghcb_msr >> pg_shift) & 0xffffffffff;
+                    
+                    Sev::set_page_state(vm_fd, gfn, size, op == 1);
+                    return Ok(VcpuEmulation::Handled);                    
+                }
+                error!("Unsupported ghcb request: 0x{:x}", req);
+                Ok(VcpuEmulation::Stopped)
             }
             unexpected_exit => {
                 METRICS.vcpu.failures.inc();
@@ -684,6 +720,7 @@ mod tests {
                 &vcpu_config,
                 vm.supported_cpuid().clone(),
                 false,
+                0,
             )
             .is_ok());
 
@@ -695,6 +732,7 @@ mod tests {
             &vcpu_config,
             vm.supported_cpuid().clone(),
             false,
+            0,
         );
 
         // Test configure while using the C3 template.
@@ -705,6 +743,7 @@ mod tests {
             &vcpu_config,
             vm.supported_cpuid().clone(),
             false,
+            0,
         );
 
         // Test configure while using the T2S template.
@@ -715,6 +754,7 @@ mod tests {
             &vcpu_config,
             vm.supported_cpuid().clone(),
             false,
+            0,
         );
 
         match &get_vendor_id_from_host().unwrap() {

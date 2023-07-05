@@ -195,12 +195,22 @@ impl FwCfg {
             .unwrap();
 
         if let Some(sev) = sev.as_mut() {
-            sev.launch_update_data(
-                hashes_base_addr,
-                (num_hashes * 32).try_into().unwrap(),
-                &self.mem,
-            )
-            .unwrap();
+            if sev.snp {
+                sev.snp_launch_update(
+                    hashes_base_addr,
+                    (num_hashes * 32).try_into().unwrap(),
+                    &self.mem,
+                    1
+                )
+                    .unwrap();
+            } else {
+                sev.launch_update_data(
+                    hashes_base_addr,
+                    (num_hashes * 32).try_into().unwrap(),
+                    &self.mem,
+                )
+                .unwrap();
+            }
         }
     }
 

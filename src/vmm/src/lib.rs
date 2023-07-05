@@ -650,6 +650,9 @@ impl Vmm {
             sev.load_firmware(fw_path, &self.guest_memory)
                 .map_err(|err| Error::SevSetup(err))?;
 
+            sev.snp_insert_cpuid_page(&self.guest_memory, self.vm.supported_cpuid().as_slice())
+                .map_err(|err| Error::SevSetup(err))?;
+
             return Ok(sev
                 .load_kernel(&mut kernel_file, &self.guest_memory)
                 .map_err(|err| Error::SevSetup(err))?);
@@ -660,12 +663,17 @@ impl Vmm {
     /// Finishes SEV boot
     pub fn finish_sev(&mut self) -> Result<()> {
         if let Some(sev) = self.sev.as_mut() {
-            sev.launch_update_vmsa()
-                .map_err(|err| Error::SevFinish(err))?;
-            sev.get_launch_measurement()
-                .map_err(|err| Error::SevFinish(err))?;
-            sev.sev_launch_finish()
-                .map_err(|err| Error::SevFinish(err))?;
+            if sev.snp {
+                sev.snp_launch_finish()
+                    .map_err(|err| Error::SevFinish(err))?;
+            } else {
+                sev.launch_update_vmsa()
+                    .map_err(|err| Error::SevFinish(err))?;
+                sev.get_launch_measurement()
+                    .map_err(|err| Error::SevFinish(err))?;
+                sev.sev_launch_finish()
+                    .map_err(|err| Error::SevFinish(err))?;
+            }
         }
         Ok(())
     }

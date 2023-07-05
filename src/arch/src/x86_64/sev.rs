@@ -1,46 +1,55 @@
+use core::slice;
 use std::{
-    arch::x86_64::__cpuid,
+    arch::x86_64::{__cpuid},
     convert::TryInto,
     fmt::Display,
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom},
     os::unix::prelude::AsRawFd,
     path::PathBuf,
-    sync::Arc,
+    sync::Arc, mem::size_of,
 };
 
 use kvm_bindings::{
-    kvm_sev_cmd, kvm_sev_launch_measure, kvm_sev_launch_start, kvm_sev_launch_update_data,
-    kvm_sev_snp_launch_start, kvm_snp_init, sev_cmd_id_KVM_SEV_ES_INIT, sev_cmd_id_KVM_SEV_INIT,
-    sev_cmd_id_KVM_SEV_LAUNCH_FINISH, sev_cmd_id_KVM_SEV_LAUNCH_MEASURE,
+    kvm_memory_attributes, kvm_sev_cmd, kvm_sev_launch_measure,
+    kvm_sev_launch_start, kvm_sev_launch_update_data, kvm_sev_snp_launch_finish,
+    kvm_sev_snp_launch_start, kvm_sev_snp_launch_update, kvm_snp_init, sev_cmd_id_KVM_SEV_ES_INIT,
+    sev_cmd_id_KVM_SEV_INIT, sev_cmd_id_KVM_SEV_LAUNCH_FINISH, sev_cmd_id_KVM_SEV_LAUNCH_MEASURE,
     sev_cmd_id_KVM_SEV_LAUNCH_START, sev_cmd_id_KVM_SEV_LAUNCH_UPDATE_DATA,
     sev_cmd_id_KVM_SEV_LAUNCH_UPDATE_VMSA, sev_cmd_id_KVM_SEV_SNP_INIT,
-    sev_cmd_id_KVM_SEV_SNP_LAUNCH_START,
+    sev_cmd_id_KVM_SEV_SNP_LAUNCH_FINISH, sev_cmd_id_KVM_SEV_SNP_LAUNCH_START,
+    sev_cmd_id_KVM_SEV_SNP_LAUNCH_UPDATE, KVM_SEV_SNP_PAGE_TYPE_CPUID, KVM_SEV_SNP_PAGE_TYPE_NORMAL, kvm_cpuid_entry2,
 };
 use kvm_ioctls::VmFd;
+use linux_loader::bootparam::boot_e820_entry;
 use logger::info;
 use thiserror::Error;
 use utils::time::TimestampUs;
-use vm_memory::{Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
-
+use vm_memory::{
+    Bytes, GuestAddress, GuestMemory, GuestMemoryMmap,
+};
 /// Length of intial boot time measurement
 const MEASUREMENT_LEN: u32 = 48;
 /// Where the SEV firmware will be loaded in guest memory
 pub const FIRMWARE_ADDR: GuestAddress = GuestAddress(0x100000);
 //From SEV/KVM API SPEC
 /// Debugging of the guest is disallowed when set
-const POLICY_NOBDG: u32 = 1;
+const _POLICY_NOBDG: u32 = 1;
 /// Sharing keys with other guests is disallowed when set
-const POLICY_NOKS: u32 = 1 << 1;
+const _POLICY_NOKS: u32 = 1 << 1;
 /// SEV-ES is required when set
 const POLICY_ES: u32 = 1 << 2;
 /// Sending the guest to another platform is disallowed when set
-const POLICY_NOSEND: u32 = 1 << 3;
+const _POLICY_NOSEND: u32 = 1 << 3;
 /// The guest must not be transmitted to another platform that is not in the domain when set
-const POLICY_DOMAIN: u32 = 1 << 4;
+const _POLICY_DOMAIN: u32 = 1 << 4;
 /// The guest must not be transmitted to another platform that is not SEV capable when set
-const POLICY_SEV: u32 = 1 << 5;
-
+const _POLICY_SEV: u32 = 1 << 5;
+const _PAGE_SIZE_2MB: u64 = 0x200000;
+/// GHCB shared buffer size
+const GHCB_SHARED_BUF_SIZE: usize = 0x7f0;
+/// Maximum psc entries in ghcb shared buffer
+const VMGEXIT_PSC_MAX_ENTRY: usize = 253;
 //This excludes SUCCESS=0 and ACTIVE=18
 #[derive(Debug, Error)]
 /// SEV platform errors
@@ -223,6 +232,58 @@ pub struct Sev {
     pub es: bool,
 }
 
+#[repr(C, packed)]
+struct PscHdr {
+    cur_entry: u16,
+    end_entry: u16,
+    reserved: u32,
+}
+
+#[derive(Default, Copy, Clone)]
+struct PscEntry(u64);
+
+#[repr(C, packed)]
+struct SnpPscDesc {
+    hdr: PscHdr,
+    entries: [PscEntry; VMGEXIT_PSC_MAX_ENTRY],
+}
+
+impl PscEntry {
+    fn _get_cur_page(&self) -> u64 {
+        self.0 & 0xfff
+    }
+
+    fn get_gfn(&self) -> u64 {
+        (self.0 & (0xffffffffff << 12)) >> 12
+    }
+
+    fn get_operation(&self) -> u64 {
+        (self.0 & (0xf << 52)) >> 52
+    }
+
+    fn get_page_size(&self) -> u64 {
+        (self.0 & (1 << 56)) >> 56
+    }
+}
+
+#[repr(C, packed)]
+struct GhcbSaveArea {
+    padding: [u8; 0x390],
+    sw_exit_code: u64,
+    sw_exit_info1: u64,
+    sw_exit_indo2: u64
+}
+
+#[repr(C, packed)]
+struct Ghcb {
+    save: GhcbSaveArea,
+    reserved_save: [u8; 0x800 - std::mem::size_of::<GhcbSaveArea>()],
+    shared_buffer: [u8; GHCB_SHARED_BUF_SIZE],
+    reserved_1: [u8; 10],
+    protocol_version: u16,
+    ghcb_usage: u16
+}
+
 impl Sev {
     ///Initialize SEV
     pub fn new(
@@ -281,7 +342,7 @@ impl Sev {
     }
 
     /// Initialize SEV-SNP platform
-    pub fn snp_init(&mut self) -> SevResult<()> {
+    pub fn snp_init(&mut self, guest_mem: &GuestMemoryMmap) -> SevResult<()> {
         if !self.encryption {
             return Ok(());
         }
@@ -306,9 +367,9 @@ impl Sev {
         self.sev_ioctl(&mut init)?;
 
         self.state = State::Init;
-        info!("Done Sending SEV_INIT");
+        info!("Done Sending SNP_INIT");
 
-        self.snp_launch_start()
+        self.snp_launch_start(guest_mem)
     }
 
     /// Initialize SEV platform
@@ -330,7 +391,7 @@ impl Sev {
             info!("Initializing SEV-ES");
             sev_cmd_id_KVM_SEV_ES_INIT
         } else {
-            info!("Initializing SEV-ES");
+            info!("Initializing SEV");
             sev_cmd_id_KVM_SEV_INIT
         };
 
@@ -349,18 +410,20 @@ impl Sev {
         self.sev_launch_start(session, dh_cert)
     }
 
-    fn snp_launch_start(&mut self) -> SevResult<()> {
+    fn snp_launch_start(&mut self, guest_mem: &GuestMemoryMmap) -> SevResult<()> {
         info!("Sending SNP_LAUNCH_START");
 
         if self.state != State::Init {
             return Err(SevError::InvalidPlatformState);
         }
 
-        // reserved bit (17) and SMT (16)
-        let temp_policy = (1 << 16) | (1 << 17);
+        // reserved bit (17) and SMT (16) and debug (19)
+        let temp_policy = (1 << 16) | (1 << 17) | (1 << 19);
+
+        self.policy = temp_policy;
 
         let start = kvm_sev_snp_launch_start {
-            policy: temp_policy,
+            policy: temp_policy as u64,
             ..Default::default()
         };
 
@@ -372,6 +435,20 @@ impl Sev {
         };
 
         self.sev_ioctl(&mut cmd)?;
+
+        //this is just registering the entire guest memory in the rmp, could save time if we didn't do this
+        let attrs = kvm_memory_attributes {
+            address: 0,
+            size: guest_mem.last_addr().0 + 1,
+            attributes: (1 << 3),
+            flags: 0
+        };
+
+        self.vm_fd.set_memory_attributes(&attrs).unwrap();
+
+        if attrs.size != 0 {
+            println!("ERROR 0x{:x}", attrs.size);
+        }
 
         self.state = State::LaunchUpdate;
         info!("SNP_LAUNCH_START done");
@@ -443,6 +520,209 @@ impl Sev {
         self.state = State::LaunchUpdate;
         info!("LAUNCH_START Done");
         Ok(())
+    }
+
+    /// Insert region of guest pages into guest physical memory
+    pub fn snp_launch_update(
+        &mut self,
+        guest_addr: GuestAddress,
+        len: u32,
+        guest_mem: &GuestMemoryMmap,
+        page_type: u8,
+    ) -> SevResult<()> {
+        if self.state != State::LaunchUpdate {
+            return Err(SevError::InvalidPlatformState);
+        }
+
+        info!("SNP_LAUNCH_UPDATE, guest address = 0x{:x}, len = 0x{:x}", guest_addr.0, len);
+
+        //extract guest frame number
+        let gfn = guest_addr.0 >> 12;
+        let addr = guest_mem.get_host_address(guest_addr).unwrap() as u64;
+
+        let update = kvm_sev_snp_launch_update {
+            start_gfn: gfn,
+            uaddr: addr,
+            len: len,
+            imi_page: 0,
+            page_type: page_type,
+            vmpl3_perms: 0,
+            vmpl2_perms: 0,
+            vmpl1_perms: 0,
+        };
+
+        //mark this mem as shared before encrypting
+        let mut tmp = len as u64 + (addr - (addr & !0xfff));
+        if (tmp % 4096) != 0 {
+            tmp = tmp + (0x1000 - (tmp % 0x1000));
+        }
+
+        let attrs = kvm_memory_attributes {
+            address: gfn << 12,
+            size: tmp,
+            attributes: 0,
+            flags: 0,
+        };
+
+        self.vm_fd.set_memory_attributes(&attrs).unwrap();
+
+        if attrs.size != 0 {
+            println!("ERROR 0x{:x}", attrs.size);
+        }
+
+        let mut cmd = kvm_sev_cmd {
+            id: sev_cmd_id_KVM_SEV_SNP_LAUNCH_UPDATE,
+            data: &update as *const kvm_sev_snp_launch_update as _,
+            sev_fd: self.fd.as_raw_fd() as _,
+            ..Default::default()
+        };
+        let now_tm_us = TimestampUs::default();
+        let real = now_tm_us.time_us - self.timestamp.time_us;
+        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
+        info!("Pre-encryption start: {:>06} us, {:>06} CPU us", real, cpu);
+        self.sev_ioctl(&mut cmd)?;
+        let now_tm_us = TimestampUs::default();
+        let real = now_tm_us.time_us - self.timestamp.time_us;
+        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
+        info!("Pre-encryption done: {:>06} us, {:>06} CPU us", real, cpu);
+
+        Ok(())
+    }
+
+    /// Insert CPUID page
+    pub fn snp_insert_cpuid_page(&mut self, guest_mem: &GuestMemoryMmap, cpuid: &[kvm_cpuid_entry2]) -> SevResult<()> {
+        const CPUID_PAGE_ADDR: u64 = 0x1000; //start at 4k 
+        const CPUID_PAGE_LEN: u32 = 0x1000; //4k page
+        const CPUID_FUNCTION_COUNT_MAX: u32 = 64;
+
+        if !self.snp {
+            return Ok(());
+        }
+
+        #[repr(C, packed)]
+        #[derive(Default, Copy, Clone, Debug)]
+        struct CpuidFunction {
+            eax_in: u32,
+            ecx_in: u32,
+            xcr0_in: u64,
+            xss_in: u64,
+            eax: u32,
+            ebx: u32,
+            ecx: u32,
+            edx: u32,
+            reserved: u64,
+        }
+
+        #[repr(C, packed)]
+        struct CpuidPage {
+            count: u32,
+            reserved: u32,
+            reserved1: u64,
+            functions: [CpuidFunction; CPUID_FUNCTION_COUNT_MAX as usize],
+        }
+
+        info!("Inserting CPUID page");
+
+        let mut page_entries = [CpuidFunction::default(); CPUID_FUNCTION_COUNT_MAX as usize];
+
+        //construct list of cpuid entries
+        for (i, entry) in cpuid.iter().enumerate() {
+
+            let xcr0_in = if entry.function == 0xd {
+                // (entry.edx as u64) << 32 | entry.eax as u64 
+                1
+            } else {
+                0
+            };
+
+            let func = CpuidFunction {
+                eax_in: entry.function,
+                ecx_in: entry.index,
+                xcr0_in: xcr0_in,
+                xss_in: 0,
+                eax: entry.eax,
+                ebx: entry.ebx,
+                ecx: entry.ecx,
+                edx: entry.edx,
+                reserved: 0
+            };
+
+            // println!("before: {:?}", func);
+
+            //TODO check if i goes beyond max cpuid count
+            page_entries[i] = func;
+        }
+
+        let cpuid_page = CpuidPage {
+            count: cpuid.len() as u32,
+            reserved: 0,
+            reserved1: 0,
+            functions: page_entries
+        };
+
+        let p: *const CpuidPage = &cpuid_page;
+        let p: *const u8 = p as *const u8;
+        let slice: &[u8] = unsafe {
+            slice::from_raw_parts(p, size_of::<CpuidPage>())
+        };
+
+        guest_mem
+            .write_slice(slice, GuestAddress(CPUID_PAGE_ADDR)).unwrap();
+
+        match self.snp_launch_update(
+            GuestAddress(CPUID_PAGE_ADDR), 
+            CPUID_PAGE_LEN, 
+            guest_mem, 
+            KVM_SEV_SNP_PAGE_TYPE_CPUID as u8,
+        ) {
+            Ok(()) => {},
+            Err(_) => {
+                //just try again after the PSP filters?
+                // println!("TEST");
+                self.snp_launch_update(
+                    GuestAddress(CPUID_PAGE_ADDR), 
+                    CPUID_PAGE_LEN, 
+                    guest_mem, 
+                    KVM_SEV_SNP_PAGE_TYPE_CPUID as u8,
+                ).unwrap();
+            }
+        };
+
+        let mut buf = [0u8; size_of::<CpuidPage>()];
+
+        guest_mem
+            .read_slice(&mut buf, GuestAddress(CPUID_PAGE_ADDR)).unwrap();
+
+        // let after: CpuidPage = unsafe{
+        //     transmute(buf)
+        // };
+
+        // for x in after.functions {
+        //     println!("after: {:x?}", x);
+        // }
+
+        Ok(())
+    }
+
+    /// register ram regions for snp
+    pub fn register_e820_entries(&self, boot_e820_entries: &[boot_e820_entry; 128], entries: usize) {
+        for i in 0..entries{
+            let entry = boot_e820_entries[i];
+
+            let addr = entry.addr;
+            let size = entry.size;
+
+            info!("Registering private memory region: start = 0x{:x}, size = 0x{:x}", addr, size);
+
+            let attrs = kvm_memory_attributes {
+                address: entry.addr,
+                size: entry.size,
+                attributes: (1 << 3),
+                flags: 0
+            };
+
+            self.vm_fd.set_memory_attributes(&attrs).unwrap();
+        }
     }
 
     /// Encrypt VMSA
@@ -577,6 +857,32 @@ impl Sev {
         Ok(())
     }
 
+    /// Finish SNP launch sequence
+    pub fn snp_launch_finish(&mut self) -> SevResult<()> {
+        info!("SNP_LAUNCH_FINISH");
+
+        //TODO take in expected launch digest as argument and give it to the platform
+        let finish = kvm_sev_snp_launch_finish {
+            id_block_uaddr: 0,
+            id_auth_uaddr: 0,
+            id_block_en: 0,
+            auth_key_en: 0,
+            host_data: [0u8; 32],
+            ..Default::default()
+        };
+
+        let mut cmd = kvm_sev_cmd {
+            id: sev_cmd_id_KVM_SEV_SNP_LAUNCH_FINISH,
+            data: &finish as *const kvm_sev_snp_launch_finish as u64,
+            sev_fd: self.fd.as_raw_fd() as _,
+            ..Default::default()
+        };
+
+        self.sev_ioctl(&mut cmd)?;
+        info!("SNP_LAUNCH_FINISH DONE");
+        Ok(())
+    }
+
     /// Finish SEV launch sequence
     pub fn sev_launch_finish(&mut self) -> SevResult<()> {
         if !self.encryption {
@@ -613,7 +919,26 @@ impl Sev {
         let len = kernel_file.seek(SeekFrom::End(0)).unwrap();
         kernel_file.seek(SeekFrom::Start(0)).unwrap();
 
-        //Load bzimage at 16mib
+        // let addr = guest_mem.get_host_address(GuestAddress(0x200000)).unwrap() as u64;
+
+        // self.launch_update_data(addr, len.try_into().unwrap())
+        //     .unwrap();
+
+        // if self.snp {
+        //     //Load bzimage at 2mb
+        //     guest_mem
+        //         .read_exact_from(GuestAddress(0x200000), kernel_file, len.try_into().unwrap())
+        //         .unwrap();
+        //     // encrypt the kernel but don't measure it
+        //     // load at 2mb
+        //     self.snp_launch_update(
+        //         GuestAddress(0x200000),
+        //         len.try_into().unwrap(),
+        //         guest_mem,
+        //         KVM_SEV_SNP_PAGE_TYPE_NORMAL as u8,
+        //     )?;
+        // } else {
+            //Load bzimage at 16mib
         guest_mem
             .read_exact_from(
                 GuestAddress(0x1000000),
@@ -622,10 +947,15 @@ impl Sev {
             )
             .unwrap();
 
-        // let addr = guest_mem.get_host_address(GuestAddress(0x200000)).unwrap() as u64;
+        //set kernel memory shared
+        let attrs = kvm_memory_attributes {
+            address: 0x1000000,
+            size: 0x1000000,
+            attributes: 0,
+            flags: 0,
+        };
 
-        // self.launch_update_data(addr, len.try_into().unwrap())
-        //     .unwrap();
+        self.vm_fd.set_memory_attributes(&attrs).unwrap();
 
         Ok(len)
     }
@@ -638,6 +968,7 @@ impl Sev {
         let len = f_firmware.seek(SeekFrom::End(0)).unwrap();
         f_firmware.seek(SeekFrom::Start(0)).unwrap();
 
+        //put firmware in guest memory
         guest_mem
             .read_exact_from(FIRMWARE_ADDR, &mut f_firmware, len.try_into().unwrap())
             .unwrap();
@@ -649,7 +980,12 @@ impl Sev {
             "Pre-encrypting firmware: {:>06} us, {:>06} CPU us",
             real, cpu
         );
-        self.launch_update_data(FIRMWARE_ADDR, len.try_into().unwrap(), guest_mem)?;
+
+        if self.snp {
+            self.snp_launch_update(FIRMWARE_ADDR, len.try_into().unwrap(), guest_mem, KVM_SEV_SNP_PAGE_TYPE_NORMAL as u8)?;
+        } else {
+            self.launch_update_data(FIRMWARE_ADDR, len.try_into().unwrap(), guest_mem)?;
+        }
         let now_tm_us = TimestampUs::default();
         let real = now_tm_us.time_us - self.timestamp.time_us;
         let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
@@ -659,5 +995,75 @@ impl Sev {
         );
 
         Ok(())
+    }
+
+    /// Handle a vmgexit when the guest isn't using the MSR protocol
+    pub fn handle_vmgexit(ghcb_msr: u64, guest_mem: &GuestMemoryMmap, vm_fd: &Arc<VmFd>) -> SevResult<()> {
+        info!("vmgexit ghcb msr: 0x{:x}", ghcb_msr);
+        let ghcb_gpa = GuestAddress(ghcb_msr);
+        let len = std::mem::size_of::<Ghcb>();
+
+        //read the ghcb page from the guest
+        let mut buf = vec![0u8; len];
+        guest_mem.read_slice(&mut buf, ghcb_gpa).unwrap();
+
+        let ghcb: &Ghcb = unsafe {
+            std::mem::transmute::<_, &Ghcb>(buf.as_ptr())
+        };
+
+        let mut shared_buf = vec![0u8; GHCB_SHARED_BUF_SIZE];
+        shared_buf.copy_from_slice(&ghcb.shared_buffer);
+
+        // println!("{:?}", shared_buf);
+
+        let desc: &mut SnpPscDesc = unsafe {
+            std::mem::transmute::<_, &mut SnpPscDesc>(shared_buf.as_ptr())
+        };
+
+        let cur_entry = desc.hdr.cur_entry;
+
+        let mut entries = desc.entries;
+
+        for i in cur_entry..(desc.hdr.end_entry + 1) {
+            let entry = entries[i as usize];
+            let private = entry.get_operation() == 1;
+
+            Self::set_page_state(
+                vm_fd, 
+                entry.get_gfn(), 
+                if entry.get_page_size() == 0 { 0x1000 } else { 0x200000 },
+                private
+            );
+
+            entries[i as usize] = PscEntry(entry.0 | 1);
+
+            desc.hdr.cur_entry += 1;
+        }
+
+        let shared_buf_addr =  GuestAddress(ghcb_msr + 0x800);
+        // println!("{:?}", shared_buf);
+
+        guest_mem.write_slice(&shared_buf, shared_buf_addr).unwrap();
+
+        Ok(())
+    }
+
+    /// Change page state
+    pub fn set_page_state(vm_fd: &Arc<VmFd>, gfn: u64, pg_size: u64, private: bool) {
+
+        let attrs = kvm_memory_attributes {
+            attributes: if private { 1 << 3 } else { 0 },
+            address: gfn << if pg_size == 0x1000 { 12 } else { 21 },
+            size: pg_size,
+            flags: 0,
+        };
+
+        // info!("{:x?}", attrs);
+
+        vm_fd.set_memory_attributes(&attrs).unwrap();
+
+        if attrs.size != 0 {
+            println!("ERROR 0x{:x}", attrs.size);
+        }
     }
 }

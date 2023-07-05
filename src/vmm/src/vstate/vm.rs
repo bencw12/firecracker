@@ -17,10 +17,11 @@ use arch::aarch64::gic::GicState;
 use kvm_bindings::{
     kvm_clock_data, kvm_irqchip, kvm_pit_config, kvm_pit_state2, CpuId, MsrList,
     KVM_CLOCK_TSC_STABLE, KVM_IRQCHIP_IOAPIC, KVM_IRQCHIP_PIC_MASTER, KVM_IRQCHIP_PIC_SLAVE,
-    KVM_MAX_CPUID_ENTRIES, KVM_PIT_SPEAKER_DUMMY,
+    KVM_MAX_CPUID_ENTRIES, KVM_MEM_PRIVATE, KVM_PIT_SPEAKER_DUMMY, KVM_X86_DEFAULT_VM,
+    KVM_X86_PROTECTED_VM,
 };
 #[cfg(target_arch = "x86_64")]
-use kvm_bindings::{kvm_userspace_memory_region, KVM_MEM_LOG_DIRTY_PAGES};
+use kvm_bindings::{kvm_userspace_memory_region2, KVM_MEM_LOG_DIRTY_PAGES};
 use kvm_ioctls::{Kvm, VmFd};
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
@@ -155,9 +156,14 @@ pub struct Vm {
 
 impl Vm {
     /// Constructs a new `Vm` using the given `Kvm` instance.
-    pub fn new(kvm: &Kvm) -> Result<Self> {
+    pub fn new(kvm: &Kvm, sev: bool) -> Result<Self> {
         // Create fd for interacting with kvm-vm specific functions.
-        let vm_fd = Arc::new(kvm.create_vm().map_err(Error::VmFd)?);
+        // let vm_fd = Arc::new(kvm.create_vm().map_err(Error::VmFd)?);
+        let vm_type = if sev { KVM_X86_PROTECTED_VM } else { KVM_X86_DEFAULT_VM } as u64;
+        let vm_fd = Arc::new(
+            kvm.create_vm_with_type(vm_type)
+                .map_err(Error::VmFd)?,
+        );
 
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         let supported_cpuid = kvm
@@ -349,25 +355,34 @@ impl Vm {
         guest_mem: &GuestMemoryMmap,
         track_dirty_pages: bool,
     ) -> Result<()> {
-        let mut flags = 0u32;
+        let mut flags = 0u32 | KVM_MEM_PRIVATE;
         if track_dirty_pages {
             flags |= KVM_MEM_LOG_DIRTY_PAGES;
         }
+
+         // memfd_restricted
+        let restricted_fd = unsafe { libc::syscall(451, 0) };
+
+        // println!("memfd: {}", restricted_fd);
+
         guest_mem
             .iter()
             .enumerate()
             .try_for_each(|(index, region)| {
-                let memory_region = kvm_userspace_memory_region {
+                let memory_region = kvm_userspace_memory_region2 {
                     slot: index as u32,
                     guest_phys_addr: region.start_addr().raw_value() as u64,
                     memory_size: region.len() as u64,
                     // It's safe to unwrap because the guest address is valid.
                     userspace_addr: guest_mem.get_host_address(region.start_addr()).unwrap() as u64,
                     flags,
+                    restrictedmem_fd: restricted_fd as u32, 
+                    restrictedmem_offset: 0,
+                    ..Default::default()
                 };
 
                 // Safe because the fd is a valid KVM file descriptor.
-                unsafe { self.fd.set_user_memory_region(memory_region) }
+                unsafe { self.fd.set_user_memory_region2(memory_region) }
             })
             .map_err(Error::SetUserMemoryRegion)?;
         Ok(())
@@ -411,7 +426,7 @@ pub(crate) mod tests {
             vm_memory::test_utils::create_anon_guest_memory(&[(GuestAddress(0), mem_size)], false)
                 .unwrap();
 
-        let mut vm = Vm::new(kvm.fd()).expect("Cannot create new vm");
+        let mut vm = Vm::new(kvm.fd(), false).expect("Cannot create new vm");
         assert!(vm.memory_init(&gm, kvm.max_memslots(), false).is_ok());
 
         (vm, gm)
@@ -424,19 +439,19 @@ pub(crate) mod tests {
         use utils::tempfile::TempFile;
         // Testing an error case.
         let vm =
-            Vm::new(&unsafe { Kvm::from_raw_fd(TempFile::new().unwrap().as_file().as_raw_fd()) });
+            Vm::new(&unsafe { Kvm::from_raw_fd(TempFile::new().unwrap().as_file().as_raw_fd()) }, false);
         assert!(vm.is_err());
 
         // Testing with a valid /dev/kvm descriptor.
         let kvm = KvmContext::new().unwrap();
-        assert!(Vm::new(kvm.fd()).is_ok());
+        assert!(Vm::new(kvm.fd(), false).is_ok());
     }
 
     #[test]
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn test_get_supported_cpuid() {
         let kvm = KvmContext::new().unwrap();
-        let vm = Vm::new(kvm.fd()).expect("Cannot create new vm");
+        let vm = Vm::new(kvm.fd(), false).expect("Cannot create new vm");
         let cpuid = kvm
             .fd()
             .get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)
@@ -447,7 +462,7 @@ pub(crate) mod tests {
     #[test]
     fn test_vm_memory_init() {
         let kvm_context = KvmContext::new().unwrap();
-        let mut vm = Vm::new(kvm_context.fd()).expect("Cannot create new vm");
+        let mut vm = Vm::new(kvm_context.fd(), false).expect("Cannot create new vm");
 
         // Create valid memory region and test that the initialization is successful.
         let gm =
@@ -462,7 +477,7 @@ pub(crate) mod tests {
     #[test]
     fn test_vm_save_restore_state() {
         let kvm_fd = Kvm::new().unwrap();
-        let vm = Vm::new(&kvm_fd).expect("new vm failed");
+        let vm = Vm::new(&kvm_fd, false).expect("new vm failed");
         // Irqchips, clock and pitstate are not configured so trying to save state should fail.
         assert!(vm.save_state().is_err());
 
@@ -488,7 +503,7 @@ pub(crate) mod tests {
     #[test]
     fn test_set_kvm_memory_regions() {
         let kvm_context = KvmContext::new().unwrap();
-        let vm = Vm::new(kvm_context.fd()).expect("Cannot create new vm");
+        let vm = Vm::new(kvm_context.fd(), false).expect("Cannot create new vm");
 
         let gm =
             vm_memory::test_utils::create_anon_guest_memory(&[(GuestAddress(0), 0x1000)], false)

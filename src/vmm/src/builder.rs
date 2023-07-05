@@ -20,6 +20,7 @@ use devices::legacy::RTCDevice;
 use devices::legacy::{EventFdTrigger, SerialDevice, SerialEventsWrapper, SerialWrapper};
 use devices::virtio::{Balloon, Block, MmioTransport, Net, VirtioDevice, Vsock, VsockUnixBackend};
 use event_manager::{MutEventSubscriber, SubscriberOps};
+use kvm_bindings::KVM_SEV_SNP_PAGE_TYPE_NORMAL;
 use libc::EFD_NONBLOCK;
 use linux_loader::cmdline::Cmdline as LoaderKernelCmdline;
 #[cfg(target_arch = "x86_64")]
@@ -266,7 +267,7 @@ fn create_vmm_and_vcpus(
     use self::StartMicrovmError::*;
 
     // Set up Kvm Vm and register memory regions.
-    let mut vm = setup_kvm_vm(&guest_memory, track_dirty_pages, hugepages)?;
+    let mut vm = setup_kvm_vm(&guest_memory, track_dirty_pages, hugepages, sev_enabled)?;
 
     let mut sev = None;
     if sev_enabled {
@@ -274,7 +275,7 @@ fn create_vmm_and_vcpus(
         if !snp {
             sev_dev.sev_init(session, dh_cert).unwrap();
         } else {
-            sev_dev.snp_init().unwrap();
+            sev_dev.snp_init(&guest_memory).unwrap();
         }
 
         sev = Some(sev_dev);
@@ -300,7 +301,7 @@ fn create_vmm_and_vcpus(
     #[cfg(target_arch = "x86_64")]
     let pio_device_manager = {
         setup_interrupt_controller(&mut vm)?;
-        vcpus = create_vcpus(&vm, vcpu_count, &vcpus_exit_evt).map_err(Internal)?;
+        vcpus = create_vcpus(&vm, vcpu_count, &vcpus_exit_evt, &guest_memory).map_err(Internal)?;
 
         // Make stdout non blocking.
         set_stdout_nonblocking();
@@ -837,12 +838,13 @@ pub(crate) fn setup_kvm_vm(
     guest_memory: &GuestMemoryMmap,
     track_dirty_pages: bool,
     hugepages: bool,
+    sev: bool,
 ) -> std::result::Result<Vm, StartMicrovmError> {
     use self::StartMicrovmError::Internal;
     let kvm = KvmContext::new()
         .map_err(Error::KvmContext)
         .map_err(Internal)?;
-    let mut vm = Vm::new(kvm.fd()).map_err(Error::Vm).map_err(Internal)?;
+    let mut vm = Vm::new(kvm.fd(), sev).map_err(Error::Vm).map_err(Internal)?;
     vm.memory_init(guest_memory, kvm.max_memslots(), track_dirty_pages)
         .map_err(Error::Vm)
         .map_err(Internal)?;
@@ -972,12 +974,12 @@ fn attach_legacy_devices_aarch64(
         .map_err(Error::RegisterMMIODevice)
 }
 
-fn create_vcpus(vm: &Vm, vcpu_count: u8, exit_evt: &EventFd) -> super::Result<Vec<Vcpu>> {
+fn create_vcpus(vm: &Vm, vcpu_count: u8, exit_evt: &EventFd, guest_memory: &GuestMemoryMmap) -> super::Result<Vec<Vcpu>> {
     let mut vcpus = Vec::with_capacity(vcpu_count as usize);
     for cpu_idx in 0..vcpu_count {
         let exit_evt = exit_evt.try_clone().map_err(Error::EventFd)?;
 
-        let vcpu = Vcpu::new(cpu_idx, vm, exit_evt).map_err(Error::VcpuCreate)?;
+        let vcpu = Vcpu::new(cpu_idx, vm, exit_evt, guest_memory).map_err(Error::VcpuCreate)?;
         #[cfg(target_arch = "aarch64")]
         vcpu.kvm_vcpu.init(vm.fd()).map_err(Error::VcpuInit)?;
 
@@ -1029,12 +1031,22 @@ pub fn configure_system_for_boot(
 
         #[cfg(target_arch = "x86_64")]
         if let Some(sev) = vmm.sev.as_mut() {
-            sev.launch_update_data(
-                GuestAddress(arch::x86_64::layout::CMDLINE_START),
-                boot_cmdline.as_cstring().unwrap().as_bytes().len() as u32,
-                &vmm.guest_memory,
-            )
-            .unwrap();
+            if sev.snp {
+                sev.snp_launch_update(
+                    GuestAddress(arch::x86_64::layout::CMDLINE_START),
+                    boot_cmdline.as_cstring().unwrap().as_bytes().len() as u32,
+                    &vmm.guest_memory,
+                    KVM_SEV_SNP_PAGE_TYPE_NORMAL as u8,
+                )
+                    .unwrap();
+            } else {
+                sev.launch_update_data(
+                    GuestAddress(arch::x86_64::layout::CMDLINE_START),
+                    boot_cmdline.as_cstring().unwrap().as_bytes().len() as u32,
+                    &vmm.guest_memory,
+                )
+                .unwrap();
+            }
         }
 
         arch::x86_64::configure_system(
@@ -1309,7 +1321,7 @@ pub mod tests {
             .map_err(StartMicrovmError::Internal)
             .unwrap();
 
-        let mut vm = setup_kvm_vm(&guest_memory, false, false).unwrap();
+        let mut vm = setup_kvm_vm(&guest_memory, false, false, false).unwrap();
         let mmio_device_manager = default_mmio_device_manager();
         #[cfg(target_arch = "x86_64")]
         let pio_device_manager = default_portio_device_manager();
@@ -1536,13 +1548,13 @@ pub mod tests {
         let guest_memory = create_guest_memory(128, false, false).unwrap();
 
         #[allow(unused_mut)]
-        let mut vm = setup_kvm_vm(&guest_memory, false, false).unwrap();
+        let mut vm = setup_kvm_vm(&guest_memory, false, false, false).unwrap();
         let evfd = EventFd::new(libc::EFD_NONBLOCK).unwrap();
 
         #[cfg(target_arch = "x86_64")]
         setup_interrupt_controller(&mut vm).unwrap();
 
-        let vcpu_vec = create_vcpus(&vm, vcpu_count, &evfd).unwrap();
+        let vcpu_vec = create_vcpus(&vm, vcpu_count, &evfd, &guest_memory).unwrap();
         assert_eq!(vcpu_vec.len(), vcpu_count as usize);
     }
 

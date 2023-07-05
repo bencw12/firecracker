@@ -9,6 +9,7 @@ use std::convert::TryFrom;
 use std::{io, mem, result, slice};
 
 use arch_gen::x86::mpspec;
+use kvm_bindings::KVM_SEV_SNP_PAGE_TYPE_NORMAL;
 use libc::c_char;
 use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 
@@ -286,8 +287,13 @@ pub fn setup_mptable(mem: &GuestMemoryMmap, num_cpus: u8, sev: &mut Option<Sev>)
     // Try just using mp_size and base_mp
     if let Some(sev) = sev {
         let len = mp_size;
-        sev.launch_update_data(GuestAddress(MPTABLE_START), len as u32, mem)
-            .unwrap();
+        if sev.snp {
+            sev.snp_launch_update(GuestAddress(MPTABLE_START), len as u32, mem, KVM_SEV_SNP_PAGE_TYPE_NORMAL as u8)
+            	.unwrap();
+        } else {
+            sev.launch_update_data(GuestAddress(MPTABLE_START), len as u32, mem)
+                .unwrap();
+        }
     }
 
     Ok(())
