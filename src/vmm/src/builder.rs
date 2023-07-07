@@ -266,7 +266,7 @@ fn create_vmm_and_vcpus(
     use self::StartMicrovmError::*;
 
     // Set up Kvm Vm and register memory regions.
-    let mut vm = setup_kvm_vm(&guest_memory, track_dirty_pages, hugepages, sev_enabled)?;
+    let mut vm = setup_kvm_vm(&guest_memory, track_dirty_pages, hugepages, snp)?;
 
     let mut sev = None;
     if sev_enabled {
@@ -851,16 +851,16 @@ pub(crate) fn setup_kvm_vm(
     guest_memory: &GuestMemoryMmap,
     track_dirty_pages: bool,
     hugepages: bool,
-    sev: bool,
+    snp: bool,
 ) -> std::result::Result<Vm, StartMicrovmError> {
     use self::StartMicrovmError::Internal;
     let kvm = KvmContext::new()
         .map_err(Error::KvmContext)
         .map_err(Internal)?;
-    let mut vm = Vm::new(kvm.fd(), sev)
+    let mut vm = Vm::new(kvm.fd(), snp)
         .map_err(Error::Vm)
         .map_err(Internal)?;
-    vm.memory_init(guest_memory, kvm.max_memslots(), track_dirty_pages, sev)
+    vm.memory_init(guest_memory, kvm.max_memslots(), track_dirty_pages, snp)
         .map_err(Error::Vm)
         .map_err(Internal)?;
 

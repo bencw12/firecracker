@@ -158,10 +158,10 @@ pub struct Vm {
 
 impl Vm {
     /// Constructs a new `Vm` using the given `Kvm` instance.
-    pub fn new(kvm: &Kvm, sev: bool) -> Result<Self> {
+    pub fn new(kvm: &Kvm, snp: bool) -> Result<Self> {
         // Create fd for interacting with kvm-vm specific functions.
         // let vm_fd = Arc::new(kvm.create_vm().map_err(Error::VmFd)?);
-        let vm_type = if sev {
+        let vm_type = if snp {
             KVM_X86_PROTECTED_VM
         } else {
             KVM_X86_DEFAULT_VM
@@ -205,12 +205,12 @@ impl Vm {
         guest_mem: &GuestMemoryMmap,
         kvm_max_memslots: usize,
         track_dirty_pages: bool,
-        sev: bool,
+        snp: bool,
     ) -> Result<()> {
         if guest_mem.num_regions() > kvm_max_memslots {
             return Err(Error::NotEnoughMemorySlots);
         }
-        self.set_kvm_memory_regions(guest_mem, track_dirty_pages, sev)?;
+        self.set_kvm_memory_regions(guest_mem, track_dirty_pages, snp)?;
         #[cfg(target_arch = "x86_64")]
         self.fd
             .set_tss_address(arch::x86_64::layout::KVM_TSS_ADDRESS as usize)
@@ -358,18 +358,18 @@ impl Vm {
         &self,
         guest_mem: &GuestMemoryMmap,
         track_dirty_pages: bool,
-        sev: bool,
+        snp: bool,
     ) -> Result<()> {
         let mut flags = 0u32;
         if track_dirty_pages {
             flags |= KVM_MEM_LOG_DIRTY_PAGES;
         }
 
-        if sev {
+        if snp {
             flags |= KVM_MEM_PRIVATE;
         }
 
-        if sev {
+        if snp {
             // memfd_restricted
             let restricted_fd = unsafe { libc::syscall(451, 0) };
 

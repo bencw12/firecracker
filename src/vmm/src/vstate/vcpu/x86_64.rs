@@ -21,7 +21,7 @@ use kvm_bindings::{
     kvm_xsave, CpuId, Msrs, KVM_MAX_MSR_ENTRIES,
 };
 use kvm_ioctls::{VcpuExit, VcpuFd, VmFd};
-use logger::{error, info, warn, IncMetric, METRICS};
+use logger::{error, warn, IncMetric, METRICS};
 use versionize::{VersionMap, Versionize, VersionizeError, VersionizeResult};
 use versionize_derive::Versionize;
 use vm_memory::{Address, GuestAddress, GuestMemoryMmap};
@@ -568,14 +568,14 @@ impl KvmVcpu {
 
                 Ok(VcpuEmulation::Handled)
             }
-            VcpuExit::Vmgexit(ghcb_msr, error) => {
+            VcpuExit::Vmgexit(ghcb_msr, _error) => {
                 // info!("vmgexit, ghcb msr: 0x{:x}, error: {}", ghcb_msr, error);
                 //might add this to the kernel instead of doing it here for performance
                 let mask = 0xffff;
                 let req = ghcb_msr & 0xfff;
                 // if the request is 0, the ghcb_msr value is the gpa of the ghcb page in the guest
                 if req == 0 {
-                    info!("vmgexit, ghcb msr: 0x{:x}, error: {}", ghcb_msr, error);
+                    // info!("vmgexit, ghcb msr: 0x{:x}, error: {}", ghcb_msr, error);
                     Sev::handle_vmgexit(ghcb_msr, guest_mem, vm_fd).unwrap();
                     return Ok(VcpuEmulation::Handled);
                 }

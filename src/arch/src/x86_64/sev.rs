@@ -765,22 +765,34 @@ impl Sev {
                 "Registering private memory region: start = 0x{:x}, size = 0x{:x}",
                 addr, size
             );
-            let attrs = kvm_memory_attributes {
-                address: addr,
-                size: aligned_size,
-                attributes: (1 << 3),
-                flags: 0,
-            };
+            if self.snp {
+                let attrs = kvm_memory_attributes {
+                    address: addr,
+                    size: aligned_size,
+                    attributes: (1 << 3),
+                    flags: 0,
+                };
+
+                self.vm_fd.set_memory_attributes(&attrs).unwrap();
+            }
+            //  else {
+            //     let region = kvm_enc_region {
+            //         addr,
+            //         size,
+            //     };
+
+            //     self.vm_fd.register_enc_memory_region(&region).unwrap();
+            // }
 
             entry = self.ram_regions.pop();
 
-            self.vm_fd.set_memory_attributes(&attrs).unwrap();
         }
     }
 
     /// register shared regions for snp
     pub fn register_shared_regions(&mut self) {
         let mut entry = self.shared_regions.pop();
+        info!("shared_regions_len: {}", self.shared_regions.len());
         while entry.is_some() {
             let e = entry.as_ref().unwrap();
             let addr = e.start.0;
@@ -805,7 +817,7 @@ impl Sev {
 
             self.vm_fd.set_memory_attributes(&attrs).unwrap();
 
-            entry = self.ram_regions.pop();
+            entry = self.shared_regions.pop();
         }
     }
 
@@ -976,6 +988,8 @@ impl Sev {
         if !self.encryption {
             return Ok(());
         }
+        self.register_ram_regions();
+        self.register_shared_regions();
         info!("Sending LAUNCH_FINISH");
 
         if self.state != State::LaunchSecret {
@@ -1019,7 +1033,9 @@ impl Sev {
 
         if self.snp {
             // set kernel memory shared
-            self.add_shared_region(GuestAddress(0x1000000), 0x1000000)
+            self.add_shared_region(GuestAddress(0x1000000), 0x1000000);
+            // ghcb page
+            self.add_shared_region(GuestAddress(0x2000000), 0x200000);
         }
 
         if let Some(initrd) = initrd {
@@ -1097,14 +1113,13 @@ impl Sev {
         let mut shared_buf = vec![0u8; GHCB_SHARED_BUF_SIZE];
         shared_buf.copy_from_slice(&ghcb.shared_buffer);
 
-        // println!("{:?}", shared_buf);
-
         let desc: &mut SnpPscDesc =
             unsafe { std::mem::transmute::<_, &mut SnpPscDesc>(shared_buf.as_ptr()) };
 
         let cur_entry = desc.hdr.cur_entry;
 
         let mut entries = desc.entries;
+
 
         for i in cur_entry..(desc.hdr.end_entry + 1) {
             let entry = entries[i as usize];
