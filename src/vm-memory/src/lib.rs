@@ -113,8 +113,6 @@ fn build_guarded_region(
 
     let region_start_addr = guard_addr as usize + page_size * GUARD_PAGE_COUNT;
 
-    println!("guest mem region start = 0x{:x}", region_start_addr);
-
     // Inside the protected range, starting with guard_addr + PAGE_SIZE,
     // map the requested range with received protection and flags
     let region_addr = unsafe {

@@ -20,7 +20,6 @@ use devices::legacy::RTCDevice;
 use devices::legacy::{EventFdTrigger, SerialDevice, SerialEventsWrapper, SerialWrapper};
 use devices::virtio::{Balloon, Block, MmioTransport, Net, VirtioDevice, Vsock, VsockUnixBackend};
 use event_manager::{MutEventSubscriber, SubscriberOps};
-use kvm_bindings::KVM_SEV_SNP_PAGE_TYPE_NORMAL;
 use libc::EFD_NONBLOCK;
 use linux_loader::cmdline::Cmdline as LoaderKernelCmdline;
 #[cfg(target_arch = "x86_64")]
@@ -275,9 +274,8 @@ fn create_vmm_and_vcpus(
         if !snp {
             sev_dev.sev_init(session, dh_cert).unwrap();
         } else {
-            sev_dev.snp_init(&guest_memory).unwrap();
+            sev_dev.snp_init().unwrap();
         }
-
         sev = Some(sev_dev);
     }
 
@@ -392,7 +390,7 @@ pub fn build_microvm_for_boot(
         arch::x86_64::sev::FIRMWARE_ADDR
     };
 
-    let initrd = load_initrd_from_config(boot_config, &guest_memory)?;
+    let initrd = load_initrd_from_config(boot_config, &guest_memory, sev_enabled)?;
     // Clone the command-line so that a failed boot doesn't pollute the original.
     #[allow(unused_mut)]
     let mut boot_cmdline = boot_config.cmdline.clone();
@@ -455,6 +453,7 @@ pub fn build_microvm_for_boot(
                     .try_clone()
                     .map_err(|err| StartMicrovmError::Internal(Error::KernelFile(err)))
                     .unwrap(),
+                &initrd,
             )
             .unwrap();
     }
@@ -778,12 +777,14 @@ fn load_kernel(
 fn load_initrd_from_config(
     boot_cfg: &BootConfig,
     vm_memory: &GuestMemoryMmap,
+    sev: bool,
 ) -> std::result::Result<Option<InitrdConfig>, StartMicrovmError> {
     use self::StartMicrovmError::InitrdRead;
 
     Ok(match &boot_cfg.initrd_file {
         Some(f) => Some(load_initrd(
             vm_memory,
+            sev,
             &mut f.try_clone().map_err(InitrdRead)?,
         )?),
         None => None,
@@ -798,6 +799,7 @@ fn load_initrd_from_config(
 /// Returns the result of initrd loading
 fn load_initrd<F>(
     vm_memory: &GuestMemoryMmap,
+    sev: bool,
     image: &mut F,
 ) -> std::result::Result<InitrdConfig, StartMicrovmError>
 where
@@ -821,12 +823,23 @@ where
     image.seek(SeekFrom::Start(0)).map_err(InitrdRead)?;
 
     // Get the target address
-    let address = arch::initrd_load_addr(vm_memory, size).map_err(|_| InitrdLoad)?;
+    let address = if !sev {
+        arch::initrd_load_addr(vm_memory, size).map_err(|_| InitrdLoad)?
+    } else {
+        let initrd_load_addr = arch::initrd_load_addr(vm_memory, size).map_err(|_| InitrdLoad)?;
+        let align_to_pagesize = |address| address & !(0x200000 - 1);
+        let load_addr_aligned = align_to_pagesize(initrd_load_addr);
+        //plain text inird will be just before its final resting place
+        align_to_pagesize(load_addr_aligned - size as u64)
+    };
+
+    println!("initrd address: 0x{:x}", address);
 
     // Load the image into memory
     vm_memory
         .read_from(GuestAddress(address), image, size)
         .map_err(|_| InitrdLoad)?;
+    let address = arch::initrd_load_addr(vm_memory, size).map_err(|_| InitrdLoad)?;
 
     Ok(InitrdConfig {
         address: GuestAddress(address),
@@ -844,13 +857,16 @@ pub(crate) fn setup_kvm_vm(
     let kvm = KvmContext::new()
         .map_err(Error::KvmContext)
         .map_err(Internal)?;
-    let mut vm = Vm::new(kvm.fd(), sev).map_err(Error::Vm).map_err(Internal)?;
-    vm.memory_init(guest_memory, kvm.max_memslots(), track_dirty_pages)
+    let mut vm = Vm::new(kvm.fd(), sev)
+        .map_err(Error::Vm)
+        .map_err(Internal)?;
+    vm.memory_init(guest_memory, kvm.max_memslots(), track_dirty_pages, sev)
         .map_err(Error::Vm)
         .map_err(Internal)?;
 
     for region in guest_memory.iter() {
         if hugepages {
+            println!("TEST");
             let ret = unsafe {
                 libc::madvise(
                     region.as_ptr() as *mut libc::c_void,
@@ -974,7 +990,12 @@ fn attach_legacy_devices_aarch64(
         .map_err(Error::RegisterMMIODevice)
 }
 
-fn create_vcpus(vm: &Vm, vcpu_count: u8, exit_evt: &EventFd, guest_memory: &GuestMemoryMmap) -> super::Result<Vec<Vcpu>> {
+fn create_vcpus(
+    vm: &Vm,
+    vcpu_count: u8,
+    exit_evt: &EventFd,
+    guest_memory: &GuestMemoryMmap,
+) -> super::Result<Vec<Vcpu>> {
     let mut vcpus = Vec::with_capacity(vcpu_count as usize);
     for cpu_idx in 0..vcpu_count {
         let exit_evt = exit_evt.try_clone().map_err(Error::EventFd)?;
@@ -1011,6 +1032,7 @@ pub fn configure_system_for_boot(
                     vmm.vm.supported_cpuid().clone(),
                     vmm.sev.is_some(),
                     kernel_len,
+                    initrd,
                 )
                 .map_err(Error::VcpuConfigure)
                 .map_err(Internal)?;
@@ -1031,22 +1053,10 @@ pub fn configure_system_for_boot(
 
         #[cfg(target_arch = "x86_64")]
         if let Some(sev) = vmm.sev.as_mut() {
-            if sev.snp {
-                sev.snp_launch_update(
-                    GuestAddress(arch::x86_64::layout::CMDLINE_START),
-                    boot_cmdline.as_cstring().unwrap().as_bytes().len() as u32,
-                    &vmm.guest_memory,
-                    KVM_SEV_SNP_PAGE_TYPE_NORMAL as u8,
-                )
-                    .unwrap();
-            } else {
-                sev.launch_update_data(
-                    GuestAddress(arch::x86_64::layout::CMDLINE_START),
-                    boot_cmdline.as_cstring().unwrap().as_bytes().len() as u32,
-                    &vmm.guest_memory,
-                )
-                .unwrap();
-            }
+            sev.add_measured_region(
+                GuestAddress(arch::x86_64::layout::CMDLINE_START),
+                boot_cmdline.as_cstring().unwrap().as_bytes().len() as u64,
+            );
         }
 
         arch::x86_64::configure_system(
@@ -1487,7 +1497,7 @@ pub mod tests {
         #[cfg(target_arch = "aarch64")]
         let gm = create_guest_mem_with_size(mem_size + arch::aarch64::layout::FDT_MAX_SIZE);
 
-        let res = load_initrd(&gm, &mut Cursor::new(&image));
+        let res = load_initrd(&gm, false, &mut Cursor::new(&image));
         assert!(res.is_ok());
         let initrd = res.unwrap();
         assert!(gm.address_in_range(initrd.address));
@@ -1498,7 +1508,7 @@ pub mod tests {
     fn test_load_initrd_no_memory() {
         let gm = create_guest_mem_with_size(79);
         let image = make_test_bin();
-        let res = load_initrd(&gm, &mut Cursor::new(&image));
+        let res = load_initrd(&gm, false, &mut Cursor::new(&image));
         assert!(res.is_err());
         assert_eq!(
             StartMicrovmError::InitrdLoad.to_string(),
@@ -1511,7 +1521,7 @@ pub mod tests {
         let image = vec![1, 2, 3, 4];
         let gm = create_guest_mem_at(GuestAddress(arch::PAGE_SIZE as u64 + 1), image.len() * 2);
 
-        let res = load_initrd(&gm, &mut Cursor::new(&image));
+        let res = load_initrd(&gm, false, &mut Cursor::new(&image));
         assert!(res.is_err());
         assert_eq!(
             StartMicrovmError::InitrdLoad.to_string(),

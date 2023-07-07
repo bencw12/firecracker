@@ -104,6 +104,8 @@ pub fn setup_regs(
     vcpu: &VcpuFd,
     boot_ip: u64,
     kernel_len: u64,
+    initrd_len: u64,
+    initrd_load_addr: u64,
 ) -> std::result::Result<(), SetupRegistersError> {
     let regs: kvm_regs = kvm_regs {
         rflags: 0x0000_0000_0000_0002u64,
@@ -119,6 +121,8 @@ pub fn setup_regs(
         rsi: super::layout::ZERO_PAGE_START as u64,
         rbx: super::layout::PVH_INFO_START as u64,
         rcx: kernel_len,
+        r14: initrd_len,
+        r15: initrd_load_addr,
         ..Default::default()
     };
 
@@ -385,7 +389,7 @@ mod tests {
             ..Default::default()
         };
 
-        setup_regs(&vcpu, expected_regs.rip, 0).unwrap();
+        setup_regs(&vcpu, expected_regs.rip, 0, 0, 0).unwrap();
 
         let actual_regs: kvm_regs = vcpu.get_regs().unwrap();
         assert_eq!(actual_regs, expected_regs);

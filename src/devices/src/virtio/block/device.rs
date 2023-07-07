@@ -250,7 +250,6 @@ impl Block {
             file_engine_type,
         )?;
 
-        // BCWH VIRTIO_F_ACCESS_PLATFORM
         let mut avail_features = (1u64 << VIRTIO_F_VERSION_1)
             | (1u64 << VIRTIO_RING_F_EVENT_IDX)
             | (1u64 << VIRTIO_F_IOMMU_PLATFORM);

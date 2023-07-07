@@ -41,7 +41,7 @@ use std::time::Duration;
 use std::{fmt, io};
 
 use arch::x86_64::sev::Sev;
-use arch::DeviceType;
+use arch::{DeviceType, InitrdConfig};
 use devices::legacy::serial::{IER_RDA_BIT, IER_RDA_OFFSET};
 use devices::virtio::balloon::Error as BalloonError;
 use devices::virtio::{
@@ -595,7 +595,7 @@ impl Vmm {
         // example, if this function were to be exposed through the VMM controller, the VMM
         // resources should cache the flag.
         self.vm
-            .set_kvm_memory_regions(&self.guest_memory, enable)
+            .set_kvm_memory_regions(&self.guest_memory, enable, false)
             .map_err(Error::Vm)
     }
 
@@ -644,9 +644,13 @@ impl Vmm {
     }
 
     /// Initializes SEV
-    pub fn setup_sev(&mut self, fw_path: &String, mut kernel_file: File) -> Result<u64> {
+    pub fn setup_sev(
+        &mut self,
+        fw_path: &String,
+        mut kernel_file: File,
+        initrd: &Option<InitrdConfig>,
+    ) -> Result<u64> {
         if let Some(sev) = self.sev.as_mut() {
-            // sev.sev_init().map_err(|err| Error::SevSetup(err))?;
             sev.load_firmware(fw_path, &self.guest_memory)
                 .map_err(|err| Error::SevSetup(err))?;
 
@@ -654,7 +658,7 @@ impl Vmm {
                 .map_err(|err| Error::SevSetup(err))?;
 
             return Ok(sev
-                .load_kernel(&mut kernel_file, &self.guest_memory)
+                .load_kernel_and_initrd(&mut kernel_file, &self.guest_memory, initrd)
                 .map_err(|err| Error::SevSetup(err))?);
         }
         Ok(0u64)
@@ -663,6 +667,9 @@ impl Vmm {
     /// Finishes SEV boot
     pub fn finish_sev(&mut self) -> Result<()> {
         if let Some(sev) = self.sev.as_mut() {
+            sev.measure_regions(&self.guest_memory)
+                .map_err(|err| Error::SevFinish(err))?;
+
             if sev.snp {
                 sev.snp_launch_finish()
                     .map_err(|err| Error::SevFinish(err))?;

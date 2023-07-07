@@ -21,7 +21,9 @@ use kvm_bindings::{
     KVM_X86_PROTECTED_VM,
 };
 #[cfg(target_arch = "x86_64")]
-use kvm_bindings::{kvm_userspace_memory_region2, KVM_MEM_LOG_DIRTY_PAGES};
+use kvm_bindings::{
+    kvm_userspace_memory_region, kvm_userspace_memory_region2, KVM_MEM_LOG_DIRTY_PAGES,
+};
 use kvm_ioctls::{Kvm, VmFd};
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
@@ -159,11 +161,12 @@ impl Vm {
     pub fn new(kvm: &Kvm, sev: bool) -> Result<Self> {
         // Create fd for interacting with kvm-vm specific functions.
         // let vm_fd = Arc::new(kvm.create_vm().map_err(Error::VmFd)?);
-        let vm_type = if sev { KVM_X86_PROTECTED_VM } else { KVM_X86_DEFAULT_VM } as u64;
-        let vm_fd = Arc::new(
-            kvm.create_vm_with_type(vm_type)
-                .map_err(Error::VmFd)?,
-        );
+        let vm_type = if sev {
+            KVM_X86_PROTECTED_VM
+        } else {
+            KVM_X86_DEFAULT_VM
+        } as u64;
+        let vm_fd = Arc::new(kvm.create_vm_with_type(vm_type).map_err(Error::VmFd)?);
 
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         let supported_cpuid = kvm
@@ -202,11 +205,12 @@ impl Vm {
         guest_mem: &GuestMemoryMmap,
         kvm_max_memslots: usize,
         track_dirty_pages: bool,
+        sev: bool,
     ) -> Result<()> {
         if guest_mem.num_regions() > kvm_max_memslots {
             return Err(Error::NotEnoughMemorySlots);
         }
-        self.set_kvm_memory_regions(guest_mem, track_dirty_pages)?;
+        self.set_kvm_memory_regions(guest_mem, track_dirty_pages, sev)?;
         #[cfg(target_arch = "x86_64")]
         self.fd
             .set_tss_address(arch::x86_64::layout::KVM_TSS_ADDRESS as usize)
@@ -354,37 +358,65 @@ impl Vm {
         &self,
         guest_mem: &GuestMemoryMmap,
         track_dirty_pages: bool,
+        sev: bool,
     ) -> Result<()> {
-        let mut flags = 0u32 | KVM_MEM_PRIVATE;
+        let mut flags = 0u32;
         if track_dirty_pages {
             flags |= KVM_MEM_LOG_DIRTY_PAGES;
         }
 
-         // memfd_restricted
-        let restricted_fd = unsafe { libc::syscall(451, 0) };
+        if sev {
+            flags |= KVM_MEM_PRIVATE;
+        }
 
-        // println!("memfd: {}", restricted_fd);
+        if sev {
+            // memfd_restricted
+            let restricted_fd = unsafe { libc::syscall(451, 0) };
 
-        guest_mem
-            .iter()
-            .enumerate()
-            .try_for_each(|(index, region)| {
-                let memory_region = kvm_userspace_memory_region2 {
-                    slot: index as u32,
-                    guest_phys_addr: region.start_addr().raw_value() as u64,
-                    memory_size: region.len() as u64,
-                    // It's safe to unwrap because the guest address is valid.
-                    userspace_addr: guest_mem.get_host_address(region.start_addr()).unwrap() as u64,
-                    flags,
-                    restrictedmem_fd: restricted_fd as u32, 
-                    restrictedmem_offset: 0,
-                    ..Default::default()
-                };
+            // println!("memfd: {}", restricted_fd);
 
-                // Safe because the fd is a valid KVM file descriptor.
-                unsafe { self.fd.set_user_memory_region2(memory_region) }
-            })
-            .map_err(Error::SetUserMemoryRegion)?;
+            guest_mem
+                .iter()
+                .enumerate()
+                .try_for_each(|(index, region)| {
+                    let memory_region = kvm_userspace_memory_region2 {
+                        slot: index as u32,
+                        guest_phys_addr: region.start_addr().raw_value() as u64,
+                        memory_size: region.len() as u64,
+                        // It's safe to unwrap because the guest address is valid.
+                        userspace_addr: guest_mem.get_host_address(region.start_addr()).unwrap()
+                            as u64,
+                        flags,
+                        restrictedmem_fd: restricted_fd as u32,
+                        restrictedmem_offset: 0,
+                        ..Default::default()
+                    };
+
+                    // Safe because the fd is a valid KVM file descriptor.
+                    unsafe { self.fd.set_user_memory_region2(memory_region) }
+                })
+                .map_err(Error::SetUserMemoryRegion)?;
+        } else {
+            guest_mem
+                .iter()
+                .enumerate()
+                .try_for_each(|(index, region)| {
+                    let memory_region = kvm_userspace_memory_region {
+                        slot: index as u32,
+                        guest_phys_addr: region.start_addr().raw_value() as u64,
+                        memory_size: region.len() as u64,
+                        // It's safe to unwrap because the guest address is valid.
+                        userspace_addr: guest_mem.get_host_address(region.start_addr()).unwrap()
+                            as u64,
+                        flags,
+                        ..Default::default()
+                    };
+
+                    // Safe because the fd is a valid KVM file descriptor.
+                    unsafe { self.fd.set_user_memory_region(memory_region) }
+                })
+                .map_err(Error::SetUserMemoryRegion)?;
+        }
         Ok(())
     }
 }
@@ -427,7 +459,9 @@ pub(crate) mod tests {
                 .unwrap();
 
         let mut vm = Vm::new(kvm.fd(), false).expect("Cannot create new vm");
-        assert!(vm.memory_init(&gm, kvm.max_memslots(), false).is_ok());
+        assert!(vm
+            .memory_init(&gm, kvm.max_memslots(), false, false)
+            .is_ok());
 
         (vm, gm)
     }
@@ -438,8 +472,10 @@ pub(crate) mod tests {
 
         use utils::tempfile::TempFile;
         // Testing an error case.
-        let vm =
-            Vm::new(&unsafe { Kvm::from_raw_fd(TempFile::new().unwrap().as_file().as_raw_fd()) }, false);
+        let vm = Vm::new(
+            &unsafe { Kvm::from_raw_fd(TempFile::new().unwrap().as_file().as_raw_fd()) },
+            false,
+        );
         assert!(vm.is_err());
 
         // Testing with a valid /dev/kvm descriptor.
@@ -469,7 +505,7 @@ pub(crate) mod tests {
             vm_memory::test_utils::create_anon_guest_memory(&[(GuestAddress(0), 0x1000)], false)
                 .unwrap();
         assert!(vm
-            .memory_init(&gm, kvm_context.max_memslots(), true)
+            .memory_init(&gm, kvm_context.max_memslots(), true, false)
             .is_ok());
     }
 
@@ -508,7 +544,7 @@ pub(crate) mod tests {
         let gm =
             vm_memory::test_utils::create_anon_guest_memory(&[(GuestAddress(0), 0x1000)], false)
                 .unwrap();
-        let res = vm.set_kvm_memory_regions(&gm, false);
+        let res = vm.set_kvm_memory_regions(&gm, false, false);
         assert!(res.is_ok());
 
         // Trying to set a memory region with a size that is not a multiple of PAGE_SIZE
@@ -516,7 +552,7 @@ pub(crate) mod tests {
         let gm =
             vm_memory::test_utils::create_guest_memory_unguarded(&[(GuestAddress(0), 0x10)], false)
                 .unwrap();
-        let res = vm.set_kvm_memory_regions(&gm, false);
+        let res = vm.set_kvm_memory_regions(&gm, false, false);
         assert_eq!(
             res.unwrap_err().to_string(),
             "Cannot set the memory regions: Invalid argument (os error 22)"

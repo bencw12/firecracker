@@ -14,13 +14,14 @@ use arch::x86_64::interrupts;
 use arch::x86_64::msr::SetMSRsError;
 use arch::x86_64::regs::{SetupFpuError, SetupRegistersError, SetupSpecialRegistersError};
 use arch::x86_64::sev::Sev;
+use arch::{initrd_load_addr, InitrdConfig};
 use cpuid::{c3, filter_cpuid, msrs_to_save_by_cpuid, t2, t2s, VmSpec};
 use kvm_bindings::{
     kvm_debugregs, kvm_lapic_state, kvm_mp_state, kvm_regs, kvm_sregs, kvm_vcpu_events, kvm_xcrs,
-    kvm_xsave, CpuId, Msrs, KVM_MAX_MSR_ENTRIES
+    kvm_xsave, CpuId, Msrs, KVM_MAX_MSR_ENTRIES,
 };
 use kvm_ioctls::{VcpuExit, VcpuFd, VmFd};
-use logger::{error, warn, info, IncMetric, METRICS};
+use logger::{error, info, warn, IncMetric, METRICS};
 use versionize::{VersionMap, Versionize, VersionizeError, VersionizeResult};
 use versionize_derive::Versionize;
 use vm_memory::{Address, GuestAddress, GuestMemoryMmap};
@@ -257,6 +258,7 @@ impl KvmVcpu {
         mut cpuid: CpuId,
         sev: bool,
         kernel_len: u64,
+        initrd: &Option<InitrdConfig>,
     ) -> std::result::Result<(), KvmVcpuConfigureError> {
         let cpuid_vm_spec = VmSpec::new(self.index, vcpu_config.vcpu_count, vcpu_config.smt)
             .map_err(KvmVcpuConfigureError::VmSpec)?;
@@ -328,11 +330,26 @@ impl KvmVcpu {
             self.msr_list.extend(t2s::msr_entries_to_save());
             t2s::update_msr_entries(&mut msr_boot_entries);
         }
+
+        let initrd_len = if let Some(initrd) = initrd {
+            initrd.size
+        } else {
+            0
+        };
+
+        let initrd_load_addr =
+            initrd_load_addr(guest_mem, initrd_len).expect("Failed to compute initrd load address");
         // By this point we know that at snapshot, the list of MSRs we need to
         // save is `architectural MSRs` + `MSRs inferred through CPUID` + `other
         // MSRs defined by the template`
         arch::x86_64::msr::set_msrs(&self.fd, &msr_boot_entries)?;
-        arch::x86_64::regs::setup_regs(&self.fd, kernel_start_addr.raw_value() as u64, kernel_len)?;
+        arch::x86_64::regs::setup_regs(
+            &self.fd,
+            kernel_start_addr.raw_value() as u64,
+            kernel_len,
+            initrd_len as u64,
+            initrd_load_addr,
+        )?;
         arch::x86_64::regs::setup_fpu(&self.fd)?;
         arch::x86_64::regs::setup_sregs(guest_mem, &self.fd, sev)?;
         arch::x86_64::interrupts::set_lint(&self.fd)?;
@@ -523,7 +540,12 @@ impl KvmVcpu {
     /// Runs the vCPU in KVM context and handles the kvm exit reason.
     ///
     /// Returns error or enum specifying whether emulation was handled or interrupted.
-    pub fn run_arch_emulation(&self, exit: VcpuExit, vm_fd: &Arc<VmFd>, guest_mem: &GuestMemoryMmap) -> super::Result<VcpuEmulation> {
+    pub fn run_arch_emulation(
+        &self,
+        exit: VcpuExit,
+        vm_fd: &Arc<VmFd>,
+        guest_mem: &GuestMemoryMmap,
+    ) -> super::Result<VcpuEmulation> {
         match exit {
             VcpuExit::IoIn(addr, data) => {
                 if let Some(pio_bus) = &self.pio_bus {
@@ -563,12 +585,12 @@ impl KvmVcpu {
                     let (size, pg_shift) = match ghcb_msr >> 56 {
                         0 => (0x1000, 12),
                         1 => (0x200000, 21),
-                        _ => panic!("invalid page size")
+                        _ => panic!("invalid page size"),
                     };
                     let gfn = (ghcb_msr >> pg_shift) & 0xffffffffff;
-                    
+
                     Sev::set_page_state(vm_fd, gfn, size, op == 1);
-                    return Ok(VcpuEmulation::Handled);                    
+                    return Ok(VcpuEmulation::Handled);
                 }
                 error!("Unsupported ghcb request: 0x{:x}", req);
                 Ok(VcpuEmulation::Stopped)
@@ -721,6 +743,7 @@ mod tests {
                 vm.supported_cpuid().clone(),
                 false,
                 0,
+                &None,
             )
             .is_ok());
 
@@ -733,6 +756,7 @@ mod tests {
             vm.supported_cpuid().clone(),
             false,
             0,
+            &None,
         );
 
         // Test configure while using the C3 template.
@@ -744,6 +768,7 @@ mod tests {
             vm.supported_cpuid().clone(),
             false,
             0,
+            &None,
         );
 
         // Test configure while using the T2S template.
@@ -755,6 +780,7 @@ mod tests {
             vm.supported_cpuid().clone(),
             false,
             0,
+            &None,
         );
 
         match &get_vendor_id_from_host().unwrap() {

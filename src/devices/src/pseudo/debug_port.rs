@@ -23,7 +23,7 @@ impl BusDevice for DebugPort {
         let real = now_tm_us.time_us - self.timestamp.time_us;
         let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
         info!(
-            "[Debug code 0x{:x}] {:>06} us, {:>06} CPU us",
+            "[Debug code {:#04x}] {:>06} us, {:>06} CPU us",
             code, real, cpu
         );
     }

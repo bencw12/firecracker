@@ -18,7 +18,6 @@ pub mod regs;
 /// Logic for SEV
 pub mod sev;
 
-use kvm_bindings::KVM_SEV_SNP_PAGE_TYPE_NORMAL;
 use linux_loader::configurator::linux::LinuxBootConfigurator;
 use linux_loader::configurator::{BootConfigurator, BootParams};
 use linux_loader::loader::bootparam::boot_params;
@@ -205,15 +204,8 @@ pub fn configure_system(
 
     if let Some(sev) = sev {
         let len = boot_params.header.len();
-        if sev.snp {
-            sev.snp_launch_update(boot_params.header_start, len as u32, guest_mem,  KVM_SEV_SNP_PAGE_TYPE_NORMAL as u8)
-            	.unwrap();
-            // sev.register_e820_entries(&params.e820_table, params.e820_entries as usize);
-
-        } else {
-            sev.launch_update_data(boot_params.header_start, len as u32, guest_mem)
-                .unwrap();
-        }
+        sev.add_ram_regions(&params.e820_table, params.e820_entries.into());
+        sev.add_measured_region(boot_params.header_start, len as u64);
     }
 
     result
