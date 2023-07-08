@@ -785,7 +785,6 @@ impl Sev {
             // }
 
             entry = self.ram_regions.pop();
-
         }
     }
 
@@ -1120,7 +1119,6 @@ impl Sev {
 
         let mut entries = desc.entries;
 
-
         for i in cur_entry..(desc.hdr.end_entry + 1) {
             let entry = entries[i as usize];
             let private = entry.get_operation() == 1;
@@ -1157,8 +1155,6 @@ impl Sev {
             size: pg_size,
             flags: 0,
         };
-
-        // info!("{:x?}", attrs);
 
         vm_fd.set_memory_attributes(&attrs).unwrap();
 

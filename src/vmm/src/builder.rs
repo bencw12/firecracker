@@ -833,8 +833,6 @@ where
         align_to_pagesize(load_addr_aligned - size as u64)
     };
 
-    println!("initrd address: 0x{:x}", address);
-
     // Load the image into memory
     vm_memory
         .read_from(GuestAddress(address), image, size)
@@ -866,7 +864,6 @@ pub(crate) fn setup_kvm_vm(
 
     for region in guest_memory.iter() {
         if hugepages {
-            println!("TEST");
             let ret = unsafe {
                 libc::madvise(
                     region.as_ptr() as *mut libc::c_void,
