@@ -568,10 +568,10 @@ impl KvmVcpu {
 
                 Ok(VcpuEmulation::Handled)
             }
-            VcpuExit::Vmgexit(ghcb_msr, _error) => {
+            VcpuExit::Vmgexit(ghcb_msr, error) => {
                 // info!("vmgexit, ghcb msr: 0x{:x}, error: {}", ghcb_msr, error);
                 //might add this to the kernel instead of doing it here for performance
-                let mask = 0xffff;
+                let mask = 0xf;
                 let req = ghcb_msr & 0xfff;
                 // if the request is 0, the ghcb_msr value is the gpa of the ghcb page in the guest
                 if req == 0 {
@@ -582,14 +582,17 @@ impl KvmVcpu {
                 if req == 0x014 {
                     // info!("vmgexit msr protocol, ghcb_msr = 0x{:x}", ghcb_msr);
                     let op = (ghcb_msr >> 52) & mask;
-                    let (size, pg_shift) = match ghcb_msr >> 56 {
-                        0 => (0x1000, 12),
-                        1 => (0x200000, 21),
-                        _ => panic!("invalid page size"),
-                    };
-                    let gfn = (ghcb_msr >> pg_shift) & 0xffffffffff;
 
-                    Sev::set_page_state(vm_fd, gfn, size, op == 1);
+                    let mut gfn = (ghcb_msr >> 12) & 0xffffffffff;
+
+                    let mut page_size = 0x1000;
+
+                    if ghcb_msr >> 63 != 0 {
+                        page_size = 0x200000;
+                        gfn = (gfn << 12) >> 21;
+                    }
+
+                    Sev::set_page_state(vm_fd, gfn, page_size, op == 1);
                     return Ok(VcpuEmulation::Handled);
                 }
                 error!("Unsupported ghcb request: 0x{:x}", req);
