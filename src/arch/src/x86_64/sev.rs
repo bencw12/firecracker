@@ -32,8 +32,14 @@ use vm_memory::{Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 use crate::InitrdConfig;
 /// Length of intial boot time measurement
 const MEASUREMENT_LEN: u32 = 48;
-/// Where the SEV firmware will be loaded in guest memory
+/// Where the SEV firmware will be loaded in guest memory (1MiB)
 pub const FIRMWARE_ADDR: GuestAddress = GuestAddress(0x100000);
+/// Where the kernel (bzImage) will be loaded in guest memory (32MiB)
+pub const KERNEL_ADDR: GuestAddress = GuestAddress(0x2000000);
+/// Maximum length of the bzImage we can load (16MiB)
+pub const KERNEL_MAX_LEN: u64 = 0x1000000;
+/// Where the GHCB page will be allocated by the firmware (48MiB)
+pub const GHCB_ADDR: GuestAddress = GuestAddress(0x3000000);
 //From SEV/KVM API SPEC
 /// Debugging of the guest is disallowed when set
 const _POLICY_NOBDG: u32 = 1;
@@ -47,7 +53,7 @@ const _POLICY_NOSEND: u32 = 1 << 3;
 const _POLICY_DOMAIN: u32 = 1 << 4;
 /// The guest must not be transmitted to another platform that is not SEV capable when set
 const _POLICY_SEV: u32 = 1 << 5;
-const _PAGE_SIZE_2MB: u64 = 0x200000;
+const PAGE_SIZE_2MB: u64 = 0x200000;
 /// GHCB shared buffer size
 const GHCB_SHARED_BUF_SIZE: usize = 0x7f0;
 /// Maximum psc entries in ghcb shared buffer
@@ -775,14 +781,6 @@ impl Sev {
 
                 self.vm_fd.set_memory_attributes(&attrs).unwrap();
             }
-            //  else {
-            //     let region = kvm_enc_region {
-            //         addr,
-            //         size,
-            //     };
-
-            //     self.vm_fd.register_enc_memory_region(&region).unwrap();
-            // }
 
             entry = self.ram_regions.pop();
         }
@@ -1024,17 +1022,17 @@ impl Sev {
         //Load bzimage at 16mib
         guest_mem
             .read_exact_from(
-                GuestAddress(0x1000000),
+                KERNEL_ADDR,
                 kernel_file,
                 len.try_into().unwrap(),
             )
             .unwrap();
 
         if self.snp {
-            // set kernel memory shared
-            self.add_shared_region(GuestAddress(0x1000000), 0x1000000);
-            // ghcb page
-            self.add_shared_region(GuestAddress(0x2000000), 0x200000);
+            // set kernel memory shared (32 mib)
+            self.add_shared_region(KERNEL_ADDR, KERNEL_MAX_LEN);
+            // ghcb page (48 mib)
+            self.add_shared_region(GHCB_ADDR, PAGE_SIZE_2MB);
         }
 
         if let Some(initrd) = initrd {
