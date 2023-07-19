@@ -568,7 +568,7 @@ impl KvmVcpu {
 
                 Ok(VcpuEmulation::Handled)
             }
-            VcpuExit::Vmgexit(ghcb_msr, error) => {
+            VcpuExit::Vmgexit(ghcb_msr, _error) => {
                 // info!("vmgexit, ghcb msr: 0x{:x}, error: {}", ghcb_msr, error);
                 //might add this to the kernel instead of doing it here for performance
                 let mask = 0xf;

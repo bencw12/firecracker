@@ -28,12 +28,14 @@ use vm_memory::{
     Address, ByteValued, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion,
 };
 
+use crate::x86_64::sev::{CPUID_PAGE_ADDR, CPUID_PAGE_LEN, SECRETS_PAGE_ADDR, SECRETS_PAGE_LEN};
 use crate::InitrdConfig;
 
 use self::sev::Sev;
 
 // Value taken from https://elixir.bootlin.com/linux/v5.10.68/source/arch/x86/include/uapi/asm/e820.h#L31
 const E820_RAM: u32 = 1;
+const E820_RESERVED: u32 = 2;
 
 #[derive(Copy, Clone, Default)]
 struct StartInfoWrapper(hvm_start_info);
@@ -195,6 +197,21 @@ pub fn configure_system(
                 E820_RAM,
             )?;
         }
+    }
+
+    if sev.is_some() {
+        add_e820_entry(
+            &mut params,
+            SECRETS_PAGE_ADDR.0,
+            SECRETS_PAGE_LEN.into(),
+            E820_RESERVED,
+        )?;
+        add_e820_entry(
+            &mut params,
+            CPUID_PAGE_ADDR.0,
+            CPUID_PAGE_LEN.into(),
+            E820_RESERVED,
+        )?;
     }
 
     let boot_params = BootParams::new(&params, GuestAddress(layout::ZERO_PAGE_START));

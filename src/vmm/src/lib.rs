@@ -657,6 +657,9 @@ impl Vmm {
             sev.snp_insert_cpuid_page(&self.guest_memory, self.vm.supported_cpuid().as_slice())
                 .map_err(|err| Error::SevSetup(err))?;
 
+            sev.snp_insert_secrets_page(&self.guest_memory)
+                .map_err(|err| Error::SevSetup(err))?;
+
             return Ok(sev
                 .load_kernel_and_initrd(&mut kernel_file, &self.guest_memory, initrd)
                 .map_err(|err| Error::SevSetup(err))?);

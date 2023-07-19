@@ -20,7 +20,7 @@ use kvm_bindings::{
     sev_cmd_id_KVM_SEV_LAUNCH_UPDATE_VMSA, sev_cmd_id_KVM_SEV_SNP_INIT,
     sev_cmd_id_KVM_SEV_SNP_LAUNCH_FINISH, sev_cmd_id_KVM_SEV_SNP_LAUNCH_START,
     sev_cmd_id_KVM_SEV_SNP_LAUNCH_UPDATE, KVM_SEV_SNP_PAGE_TYPE_CPUID,
-    KVM_SEV_SNP_PAGE_TYPE_NORMAL,
+    KVM_SEV_SNP_PAGE_TYPE_NORMAL, KVM_SEV_SNP_PAGE_TYPE_SECRETS,
 };
 use kvm_ioctls::VmFd;
 use linux_loader::bootparam::boot_e820_entry;
@@ -40,6 +40,14 @@ pub const KERNEL_ADDR: GuestAddress = GuestAddress(0x2000000);
 pub const KERNEL_MAX_LEN: u64 = 0x1000000;
 /// Where the GHCB page will be allocated by the firmware (48MiB)
 pub const GHCB_ADDR: GuestAddress = GuestAddress(0x3000000);
+/// Where the secrets page will be (50MiB)
+pub const SECRETS_PAGE_ADDR: GuestAddress = GuestAddress(0x2000);
+/// Length of the secrets page
+pub const SECRETS_PAGE_LEN: u32 = 0x1000;
+/// Where the secrets page will be (50MiB)
+pub const CPUID_PAGE_ADDR: GuestAddress = GuestAddress(0x1000);
+/// Length of the secrets page
+pub const CPUID_PAGE_LEN: u32 = 0x1000;
 //From SEV/KVM API SPEC
 /// Debugging of the guest is disallowed when set
 const _POLICY_NOBDG: u32 = 1;
@@ -602,12 +610,26 @@ impl Sev {
         let real = now_tm_us.time_us - self.timestamp.time_us;
         let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
         info!("Pre-encryption start: {:>06} us, {:>06} CPU us", real, cpu);
+
         self.sev_ioctl(&mut cmd)?;
+
         let now_tm_us = TimestampUs::default();
         let real = now_tm_us.time_us - self.timestamp.time_us;
         let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
         info!("Pre-encryption done: {:>06} us, {:>06} CPU us", real, cpu);
 
+        Ok(())
+    }
+
+    /// Insert secrets page
+    pub fn snp_insert_secrets_page(&mut self, guest_mem: &GuestMemoryMmap) -> SevResult<()> {
+        info!("SNP inserting secrets page");
+        self.snp_launch_update(
+            SECRETS_PAGE_ADDR,
+            SECRETS_PAGE_LEN,
+            guest_mem,
+            KVM_SEV_SNP_PAGE_TYPE_SECRETS.try_into().unwrap(),
+        )?;
         Ok(())
     }
 
@@ -617,8 +639,6 @@ impl Sev {
         guest_mem: &GuestMemoryMmap,
         cpuid: &[kvm_cpuid_entry2],
     ) -> SevResult<()> {
-        const CPUID_PAGE_ADDR: u64 = 0x1000; //start at 4k
-        const CPUID_PAGE_LEN: u32 = 0x1000; //4k page
         const CPUID_FUNCTION_COUNT_MAX: u32 = 64;
 
         if !self.snp {
@@ -689,12 +709,10 @@ impl Sev {
         let p: *const u8 = p as *const u8;
         let slice: &[u8] = unsafe { slice::from_raw_parts(p, size_of::<CpuidPage>()) };
 
-        guest_mem
-            .write_slice(slice, GuestAddress(CPUID_PAGE_ADDR))
-            .unwrap();
+        guest_mem.write_slice(slice, CPUID_PAGE_ADDR).unwrap();
 
         match self.snp_launch_update(
-            GuestAddress(CPUID_PAGE_ADDR),
+            CPUID_PAGE_ADDR,
             CPUID_PAGE_LEN,
             guest_mem,
             KVM_SEV_SNP_PAGE_TYPE_CPUID as u8,
@@ -703,7 +721,7 @@ impl Sev {
             Err(_) => {
                 //slight hack to have the PSP filter CPUID entries and we re-encrypt them here
                 self.snp_launch_update(
-                    GuestAddress(CPUID_PAGE_ADDR),
+                    CPUID_PAGE_ADDR,
                     CPUID_PAGE_LEN,
                     guest_mem,
                     KVM_SEV_SNP_PAGE_TYPE_CPUID as u8,
@@ -714,9 +732,7 @@ impl Sev {
 
         let mut buf = [0u8; size_of::<CpuidPage>()];
 
-        guest_mem
-            .read_slice(&mut buf, GuestAddress(CPUID_PAGE_ADDR))
-            .unwrap();
+        guest_mem.read_slice(&mut buf, CPUID_PAGE_ADDR).unwrap();
 
         Ok(())
     }
@@ -1021,11 +1037,7 @@ impl Sev {
 
         //Load bzimage at 16mib
         guest_mem
-            .read_exact_from(
-                KERNEL_ADDR,
-                kernel_file,
-                len.try_into().unwrap(),
-            )
+            .read_exact_from(KERNEL_ADDR, kernel_file, len.try_into().unwrap())
             .unwrap();
 
         if self.snp {
