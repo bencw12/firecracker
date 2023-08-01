@@ -1,5 +1,5 @@
 use std::{
-    convert::{TryFrom, TryInto},
+    convert::TryFrom,
     fmt,
     fs::File,
     io::{Read, Seek, SeekFrom},
@@ -23,7 +23,7 @@ const BZIMAGE_HEADER_MAGIC: u32 = 0x53726448;
 const BZIMAGE_CODE: u32 = 0x0;
 const DIRECT_CODE: u32 = 0x1;
 const DATA_REGION_SIZE: u64 = 0x200000;
-const DATA_REGION_ADDR: u64 = 0x200000;
+const DATA_REGION_ADDR: u64 = 0x1000000 - 0x200000;
 pub const FW_CFG_REG: u64 = 0x81;
 
 #[derive(PartialEq, Copy, Clone)]
@@ -39,9 +39,9 @@ enum State {
     WritePhdrs,
     WriteSegs,
     WriteBzImageLen,
-    WriteBzImageData,
 }
 
+#[derive(Debug)]
 enum Command {
     ///Get the type of kernel to load, should be the first command issued
     KernelType,
@@ -92,10 +92,10 @@ impl fmt::Display for Error {
     }
 }
 
-impl TryFrom<u32> for Command {
+impl TryFrom<u8> for Command {
     type Error = Error;
 
-    fn try_from(code: u32) -> Result<Self, Self::Error> {
+    fn try_from(code: u8) -> Result<Self, Self::Error> {
         match code {
             0 => Ok(Self::KernelType),
             1 => Ok(Self::BzImageLen),
@@ -122,10 +122,10 @@ impl Into<u32> for Command {
 }
 
 impl KernelType {
-    fn value(&self) -> u32 {
+    fn value(&self) -> u8 {
         match *self {
-            Self::BzImage => BZIMAGE_CODE,
-            Self::Direct => DIRECT_CODE,
+            Self::BzImage => BZIMAGE_CODE as u8,
+            Self::Direct => DIRECT_CODE as u8,
         }
     }
 }
@@ -182,20 +182,15 @@ impl FwCfg {
     }
 
     fn add_kernel_hashes(&self, hashes_path: &String, sev: &mut Option<Sev>) {
-        let num_hashes = match self.kernel_type {
-            KernelType::BzImage => 1,
-            KernelType::Direct => 3,
-        };
-
-        let hashes_base_addr = GuestAddress(arch::x86_64::sev::FIRMWARE_ADDR.0 - (num_hashes * 32));
+        let hashes_base_addr = GuestAddress(arch::x86_64::sev::FIRMWARE_ADDR.0 - 32);
 
         let mut hashes = File::open(hashes_path).unwrap();
         self.mem
-            .read_exact_from(hashes_base_addr, &mut hashes, num_hashes as usize * 32)
+            .read_exact_from(hashes_base_addr, &mut hashes, 32)
             .unwrap();
 
         if let Some(sev) = sev.as_mut() {
-            sev.add_measured_region(hashes_base_addr, (num_hashes * 32).try_into().unwrap());
+            sev.add_measured_region(hashes_base_addr, 32);
         }
     }
 
@@ -269,13 +264,16 @@ impl FwCfg {
 
 impl BusDevice for FwCfg {
     fn read(&mut self, offset: u64, data: &mut [u8]) {
-        if offset != 0 || data.len() < 4 {
+        info!("FW_CFG READ");
+
+        if offset != 0 || data.len() < 1 {
             info!("fw_cfg invalid read address");
         } else {
             match self.cmd {
                 Some(Command::KernelType) => {
+                    info!("KERNEL TYPE");
                     if self.state == State::WriteKernelType {
-                        let type_buf = u32::to_le_bytes(self.kernel_type.value());
+                        let type_buf = u8::to_le_bytes(self.kernel_type.value());
                         data.copy_from_slice(&type_buf);
                         if self.kernel_type == KernelType::Direct {
                             self.state = State::WriteElfHdr;
@@ -368,33 +366,33 @@ impl BusDevice for FwCfg {
                         warn!("Invalid state");
                     }
                 }
-                Some(Command::BzImageLen) => {
-                    if self.state == State::WriteBzImageLen {
-                        let len_buf = u32::to_le_bytes(self.kernel_len as u32);
-                        data.copy_from_slice(&len_buf);
-                        self.state = State::WriteBzImageData;
-                    } else {
-                        warn!("Invalid state");
-                    }
-                }
-                Some(Command::BzimageData) => {
-                    if self.state == State::WriteBzImageData {
-                        let pos = self.kernel.stream_position().unwrap();
-                        let mut chunk_sz = DATA_REGION_SIZE;
-                        //check if the last chunk of file is less than a page
-                        if self.kernel_len - pos < DATA_REGION_SIZE {
-                            chunk_sz = self.kernel_len - pos;
-                        }
+                // Some(Command::BzImageLen) => {
+                //     if self.state == State::WriteBzImageLen {
+                //         let len_buf = u32::to_le_bytes(self.kernel_len as u32);
+                //         data.copy_from_slice(&len_buf);
+                //         self.state = State::WriteBzImageData;
+                //     } else {
+                //         warn!("Invalid state");
+                //     }
+                // }
+                // Some(Command::BzimageData) => {
+                //     if self.state == State::WriteBzImageData {
+                //         let pos = self.kernel.stream_position().unwrap();
+                //         let mut chunk_sz = DATA_REGION_SIZE;
+                //         //check if the last chunk of file is less than a page
+                //         if self.kernel_len - pos < DATA_REGION_SIZE {
+                //             chunk_sz = self.kernel_len - pos;
+                //         }
 
-                        self.mem
-                            .read_exact_from(
-                                GuestAddress(DATA_REGION_ADDR),
-                                &mut self.kernel,
-                                chunk_sz as usize,
-                            )
-                            .unwrap();
-                    }
-                }
+                //         self.mem
+                //             .read_exact_from(
+                //                 GuestAddress(DATA_REGION_ADDR),
+                //                 &mut self.kernel,
+                //                 chunk_sz as usize,
+                //             )
+                //             .unwrap();
+                //     }
+                // }
                 _ => warn!("Invalid read for command"),
             }
         }
@@ -402,15 +400,18 @@ impl BusDevice for FwCfg {
 
     fn write(&mut self, offset: u64, data: &[u8]) {
         //Only allow writes to 8 bytes before the page to load data
-        if offset != 0 || data.len() < 4 {
+        if offset != 0 || data.len() < 1 {
             info!("fw_cfg invalid write");
         } else {
-            let mut buf: [u8; 4] = Default::default();
-            buf.copy_from_slice(&data[0..4]);
-            let code = u32::from_le_bytes(buf);
+            let mut buf: [u8; 1] = Default::default();
+            buf.copy_from_slice(&data[0..]);
+            let code = u8::from_le_bytes(buf);
             let result = Command::try_from(code);
             match result {
-                Ok(cmd) => self.cmd = Some(cmd),
+                Ok(cmd) => {
+                    self.cmd = Some(cmd);
+                    info!("FW_CFG: {:?}", self.cmd);
+                },
                 _ => warn!("FwCfg invalid command"),
             }
         }
