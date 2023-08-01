@@ -610,6 +610,7 @@ impl Sev {
         let real = now_tm_us.time_us - self.timestamp.time_us;
         let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
         info!("Pre-encryption start: {:>06} us, {:>06} CPU us", real, cpu);
+        info!("Pre-encrypting region: addr=0x{:x}, len=0x{:x}", guest_addr.0, len);
 
         self.sev_ioctl(&mut cmd)?;
 
@@ -623,6 +624,11 @@ impl Sev {
 
     /// Insert secrets page
     pub fn snp_insert_secrets_page(&mut self, guest_mem: &GuestMemoryMmap) -> SevResult<()> {
+
+        if !self.snp {
+            return Ok(());
+        }
+
         info!("SNP inserting secrets page");
         self.snp_launch_update(
             SECRETS_PAGE_ADDR,
@@ -927,6 +933,8 @@ impl Sev {
         let real = now_tm_us.time_us - self.timestamp.time_us;
         let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
         info!("Pre-encryption start: {:>06} us, {:>06} CPU us", real, cpu);
+        info!("Pre-encrypting region: addr=0x{:x}, len=0x{:x}", guest_addr.0, len);
+
         self.sev_ioctl(&mut msg).unwrap();
         let now_tm_us = TimestampUs::default();
         let real = now_tm_us.time_us - self.timestamp.time_us;
