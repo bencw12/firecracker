@@ -43,6 +43,7 @@ use std::{fmt, io};
 use arch::x86_64::sev::Sev;
 use arch::{DeviceType, InitrdConfig};
 use devices::legacy::serial::{IER_RDA_BIT, IER_RDA_OFFSET};
+use devices::pseudo::KernelType;
 use devices::virtio::balloon::Error as BalloonError;
 use devices::virtio::{
     Balloon, BalloonConfig, BalloonStats, Block, MmioTransport, Net, BALLOON_DEV_ID, TYPE_BALLOON,
@@ -648,6 +649,7 @@ impl Vmm {
         &mut self,
         fw_path: &String,
         mut kernel_file: File,
+        kernel_type: KernelType,
         initrd: &Option<InitrdConfig>,
     ) -> Result<u64> {
         if let Some(sev) = self.sev.as_mut() {
@@ -661,7 +663,7 @@ impl Vmm {
                 .map_err(|err| Error::SevSetup(err))?;
 
             return Ok(sev
-                .load_kernel_and_initrd(&mut kernel_file, &self.guest_memory, initrd)
+                .load_kernel_and_initrd(&mut kernel_file, kernel_type == KernelType::BzImage, &self.guest_memory, initrd)
                 .map_err(|err| Error::SevSetup(err))?);
         }
         Ok(0u64)

@@ -34,12 +34,18 @@ use crate::InitrdConfig;
 const MEASUREMENT_LEN: u32 = 48;
 /// Where the SEV firmware will be loaded in guest memory (1MiB)
 pub const FIRMWARE_ADDR: GuestAddress = GuestAddress(0x100000);
-/// Where the kernel (bzImage) will be loaded in guest memory (32MiB)
-pub const KERNEL_ADDR: GuestAddress = GuestAddress(0x2000000);
+/// Where the fw_cfg device will load the kernel elf in chunks
+pub const KERNEL_BOUNCE_BUFFER: GuestAddress = GuestAddress(0x1000000 - 0x200000);
 /// Maximum length of the bzImage we can load (16MiB)
-pub const KERNEL_MAX_LEN: u64 = 0x1000000;
+pub const KERNEL_BOUNCE_BUFFER_LEN: u64 = 0x200000;
+/// Where the bzImage will be loaded
+pub const BZIMAGE_ADDR: GuestAddress = GuestAddress(0x2000000);
+/// Max bzimage length
+pub const BZIMAGE_MAX_LEN: u64 = 0x1000000;
 /// Where the GHCB page will be allocated by the firmware (48MiB)
-pub const GHCB_ADDR: GuestAddress = GuestAddress(0x3000000);
+pub const GHCB_ADDR_ELF: GuestAddress = GuestAddress(0x1000000 - 0x400000);
+/// Where the GHCB page will be allocated by the firmware (48MiB)
+pub const GHCB_ADDR_BZIMAGE: GuestAddress = GuestAddress(0x3000000);
 /// Where the secrets page will be (50MiB)
 pub const SECRETS_PAGE_ADDR: GuestAddress = GuestAddress(0x2000);
 /// Length of the secrets page
@@ -248,8 +254,6 @@ pub struct Sev {
     pub snp: bool,
     /// position of the Cbit
     pub cbitpos: u32,
-    /// DEBUG whether or not encryption is active. This is for testing the firmware without encryption
-    pub encryption: bool,
     /// Whether the guest policy requires SEV-ES
     pub es: bool,
     /// Regions to pre-encrypt
@@ -317,7 +321,6 @@ impl Sev {
     pub fn new(
         vm_fd: Arc<VmFd>,
         snp: bool,
-        encryption: bool,
         timestamp: TimestampUs,
         policy: u32,
     ) -> Self {
@@ -350,7 +353,6 @@ impl Sev {
             measure: [0u8; 48],
             cbitpos: ebx,
             snp: snp,
-            encryption: encryption,
             timestamp,
             es,
             measured_regions: Vec::new(),
@@ -384,10 +386,6 @@ impl Sev {
 
     /// Initialize SEV-SNP platform
     pub fn snp_init(&mut self) -> SevResult<()> {
-        if !self.encryption {
-            return Ok(());
-        }
-
         info!("Sending SNP_INIT");
 
         if self.state != State::UnInit {
@@ -419,9 +417,6 @@ impl Sev {
         session: &mut Option<File>,
         dh_cert: &mut Option<File>,
     ) -> SevResult<()> {
-        if !self.encryption {
-            return Ok(());
-        }
         info!("Sending SEV_INIT");
 
         if self.state != State::UnInit {
@@ -488,9 +483,6 @@ impl Sev {
         session: &mut Option<File>,
         dh_cert: &mut Option<File>,
     ) -> SevResult<()> {
-        if !self.encryption {
-            return Ok(());
-        }
         info!("LAUNCH_START");
 
         if self.state != State::Init {
@@ -561,10 +553,10 @@ impl Sev {
             return Err(SevError::InvalidPlatformState);
         }
 
-        info!(
-            "SNP_LAUNCH_UPDATE, guest address = 0x{:x}, len = 0x{:x}",
-            guest_addr.0, len
-        );
+        // info!(
+        //     "SNP_LAUNCH_UPDATE, guest address = 0x{:x}, len = 0x{:x}",
+        //     guest_addr.0, len
+        // );
 
         //extract guest frame number
         let gfn = guest_addr.0 >> 12;
@@ -606,18 +598,8 @@ impl Sev {
             sev_fd: self.fd.as_raw_fd() as _,
             ..Default::default()
         };
-        let now_tm_us = TimestampUs::default();
-        let real = now_tm_us.time_us - self.timestamp.time_us;
-        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
-        info!("Pre-encryption start: {:>06} us, {:>06} CPU us", real, cpu);
-        info!("Pre-encrypting region: addr=0x{:x}, len=0x{:x}", guest_addr.0, len);
 
         self.sev_ioctl(&mut cmd)?;
-
-        let now_tm_us = TimestampUs::default();
-        let real = now_tm_us.time_us - self.timestamp.time_us;
-        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
-        info!("Pre-encryption done: {:>06} us, {:>06} CPU us", real, cpu);
 
         Ok(())
     }
@@ -746,8 +728,23 @@ impl Sev {
     /// call LAUNCH_UPDATE on all regions
     pub fn measure_regions(&mut self, guest_mem: &GuestMemoryMmap) -> SevResult<()> {
         let mut entry = self.measured_regions.pop();
+        let now_tm_us = TimestampUs::default();
+        let real = now_tm_us.time_us - self.timestamp.time_us;
+        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
+        info!("Pre-encryption start: {:>06} us, {:>06} CPU us", real, cpu);
         while entry.is_some() {
             let region = entry.as_ref().unwrap();
+
+            if region.start == FIRMWARE_ADDR {
+                let now_tm_us = TimestampUs::default();
+                let real = now_tm_us.time_us - self.timestamp.time_us;
+                let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
+                info!(
+                    "Pre-encrypting firmware: {:>06} us, {:>06} CPU us",
+                    real, cpu
+                );
+            }
+
             if self.snp {
                 self.snp_launch_update(
                     region.start,
@@ -758,9 +755,24 @@ impl Sev {
             } else {
                 self.launch_update_data(region.start, region.len.try_into().unwrap(), guest_mem)?;
             }
+            
+            if region.start == FIRMWARE_ADDR {
+                let now_tm_us = TimestampUs::default();
+                let real = now_tm_us.time_us - self.timestamp.time_us;
+                let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
+                info!(
+                    "Done pre-encrypting firmware: {:>06} us, {:>06} CPU us",
+                    real, cpu
+                );
+            }
+
 
             entry = self.measured_regions.pop();
         }
+        let now_tm_us = TimestampUs::default();
+        let real = now_tm_us.time_us - self.timestamp.time_us;
+        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
+        info!("Pre-encryption done: {:>06} us, {:>06} CPU us", real, cpu);
         Ok(())
     }
 
@@ -789,10 +801,10 @@ impl Sev {
                 size
             };
 
-            info!(
-                "Registering private memory region: start = 0x{:x}, size = 0x{:x}",
-                addr, size
-            );
+            // info!(
+            //     "Registering private memory region: start = 0x{:x}, size = 0x{:x}",
+            //     addr, size
+            // );
             if self.snp {
                 let attrs = kvm_memory_attributes {
                     address: addr,
@@ -811,7 +823,6 @@ impl Sev {
     /// register shared regions for snp
     pub fn register_shared_regions(&mut self) {
         let mut entry = self.shared_regions.pop();
-        info!("shared_regions_len: {}", self.shared_regions.len());
         while entry.is_some() {
             let e = entry.as_ref().unwrap();
             let addr = e.start.0;
@@ -823,10 +834,10 @@ impl Sev {
                 size
             };
 
-            info!(
-                "Registering shared memory region: start = 0x{:x}, size = 0x{:x}",
-                addr, size
-            );
+            // info!(
+            //     "Registering shared memory region: start = 0x{:x}, size = 0x{:x}",
+            //     addr, size
+            // );
             let attrs = kvm_memory_attributes {
                 address: addr,
                 size: aligned_size,
@@ -842,9 +853,9 @@ impl Sev {
 
     /// Encrypt VMSA
     pub fn launch_update_vmsa(&mut self) -> SevResult<()> {
-        //test for debug encryption disabled or non-es boot
-        if !self.encryption || !self.es {
-            return Ok(());
+
+        if !self.es {
+            return Ok(())
         }
 
         if self.state != State::LaunchUpdate {
@@ -871,10 +882,6 @@ impl Sev {
         len: u32,
         guest_mem: &GuestMemoryMmap,
     ) -> SevResult<()> {
-        if !self.encryption {
-            return Ok(());
-        }
-
         let addr = guest_mem.get_host_address(guest_addr).unwrap() as u64;
 
         let mut aligned_addr = addr;
@@ -929,25 +936,13 @@ impl Sev {
             ..Default::default()
         };
 
-        let now_tm_us = TimestampUs::default();
-        let real = now_tm_us.time_us - self.timestamp.time_us;
-        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
-        info!("Pre-encryption start: {:>06} us, {:>06} CPU us", real, cpu);
-        info!("Pre-encrypting region: addr=0x{:x}, len=0x{:x}", guest_addr.0, len);
-
         self.sev_ioctl(&mut msg).unwrap();
-        let now_tm_us = TimestampUs::default();
-        let real = now_tm_us.time_us - self.timestamp.time_us;
-        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
-        info!("Pre-encryption done: {:>06} us, {:>06} CPU us", real, cpu);
+
         Ok(())
     }
 
     /// Get boot measurement
     pub fn get_launch_measurement(&mut self) -> SevResult<()> {
-        if !self.encryption {
-            return Ok(());
-        }
         info!("Sending LAUNCH_MEASURE");
 
         if self.state != State::LaunchUpdate {
@@ -1006,9 +1001,6 @@ impl Sev {
 
     /// Finish SEV launch sequence
     pub fn sev_launch_finish(&mut self) -> SevResult<()> {
-        if !self.encryption {
-            return Ok(());
-        }
         self.register_ram_regions();
         self.register_shared_regions();
         info!("Sending LAUNCH_FINISH");
@@ -1036,23 +1028,36 @@ impl Sev {
     pub fn load_kernel_and_initrd(
         &mut self,
         kernel_file: &mut File,
+        is_bzimage: bool, 
         guest_mem: &GuestMemoryMmap,
         initrd: &Option<InitrdConfig>,
     ) -> SevResult<u64> {
-        kernel_file.seek(SeekFrom::Start(0)).unwrap();
-        let len = kernel_file.seek(SeekFrom::End(0)).unwrap();
-        kernel_file.seek(SeekFrom::Start(0)).unwrap();
 
-        //Load bzimage at 16mib
-        guest_mem
-            .read_exact_from(KERNEL_ADDR, kernel_file, len.try_into().unwrap())
-            .unwrap();
+        let mut len = 0;
+
+        if is_bzimage {
+            kernel_file.seek(SeekFrom::Start(0)).unwrap();
+            len = kernel_file.seek(SeekFrom::End(0)).unwrap();
+            kernel_file.seek(SeekFrom::Start(0)).unwrap();
+
+            //Load bzimage at 16mib
+            guest_mem
+                .read_exact_from(BZIMAGE_ADDR, kernel_file, len.try_into().unwrap())
+                .unwrap();
+        }
 
         if self.snp {
-            // set kernel memory shared (32 mib)
-            self.add_shared_region(KERNEL_ADDR, KERNEL_MAX_LEN);
-            // ghcb page (48 mib)
-            self.add_shared_region(GHCB_ADDR, PAGE_SIZE_2MB);
+            if is_bzimage {
+                //set the plain text region for the bzimage shared
+                info!("kernel is bzimage");
+                self.add_shared_region(BZIMAGE_ADDR, BZIMAGE_MAX_LEN);
+                self.add_shared_region(GHCB_ADDR_BZIMAGE, PAGE_SIZE_2MB);
+            } else {
+                info!("kernel is elf");
+                //set the plain text bounce buffer for kernel elf data shared
+                self.add_shared_region(KERNEL_BOUNCE_BUFFER, KERNEL_BOUNCE_BUFFER_LEN);
+                self.add_shared_region(GHCB_ADDR_ELF, PAGE_SIZE_2MB);
+            }
         }
 
         if let Some(initrd) = initrd {
@@ -1090,23 +1095,7 @@ impl Sev {
             .read_exact_from(FIRMWARE_ADDR, &mut f_firmware, len.try_into().unwrap())
             .unwrap();
 
-        let now_tm_us = TimestampUs::default();
-        let real = now_tm_us.time_us - self.timestamp.time_us;
-        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
-        info!(
-            "Pre-encrypting firmware: {:>06} us, {:>06} CPU us",
-            real, cpu
-        );
-
         self.add_measured_region(FIRMWARE_ADDR, len.try_into().unwrap());
-
-        let now_tm_us = TimestampUs::default();
-        let real = now_tm_us.time_us - self.timestamp.time_us;
-        let cpu = now_tm_us.cputime_us - self.timestamp.cputime_us;
-        info!(
-            "Done pre-encrypting firmware: {:>06} us, {:>06} CPU us",
-            real, cpu
-        );
 
         Ok(())
     }
@@ -1117,7 +1106,7 @@ impl Sev {
         guest_mem: &GuestMemoryMmap,
         vm_fd: &Arc<VmFd>,
     ) -> SevResult<()> {
-        info!("vmgexit ghcb msr: 0x{:x}", ghcb_msr);
+        // info!("vmgexit ghcb msr: 0x{:x}", ghcb_msr);
         let ghcb_gpa = GuestAddress(ghcb_msr);
         let len = std::mem::size_of::<Ghcb>();
 

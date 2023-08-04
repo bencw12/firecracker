@@ -8,8 +8,6 @@ pub struct SevConfig {
     pub firmware_path: String,
     /// Path to hashes
     pub hashes_path: String,
-    /// Whether or not to enable encryption
-    pub encryption: bool,
     /// Path to guest launch blob
     pub session_path: Option<String>,
     /// Path to guest DH public key

@@ -26,8 +26,8 @@ const DATA_REGION_SIZE: u64 = 0x200000;
 const DATA_REGION_ADDR: u64 = 0x1000000 - 0x200000;
 pub const FW_CFG_REG: u64 = 0x81;
 
-#[derive(PartialEq, Copy, Clone)]
-enum KernelType {
+#[derive(PartialEq, Copy, Clone, Debug)]
+pub enum KernelType {
     BzImage,
     Direct,
 }
@@ -179,6 +179,10 @@ impl FwCfg {
         fw_cfg.add_kernel_hashes(hashes_path, sev);
 
         fw_cfg
+    }
+
+    pub fn kernel_type(&self) -> KernelType {
+        self.kernel_type
     }
 
     fn add_kernel_hashes(&self, hashes_path: &String, sev: &mut Option<Sev>) {

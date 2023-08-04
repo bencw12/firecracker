@@ -18,6 +18,7 @@ use devices::legacy::serial::ReadableFd;
 #[cfg(target_arch = "aarch64")]
 use devices::legacy::RTCDevice;
 use devices::legacy::{EventFdTrigger, SerialDevice, SerialEventsWrapper, SerialWrapper};
+use devices::pseudo::KernelType;
 use devices::virtio::{Balloon, Block, MmioTransport, Net, VirtioDevice, Vsock, VsockUnixBackend};
 use event_manager::{MutEventSubscriber, SubscriberOps};
 use libc::EFD_NONBLOCK;
@@ -257,7 +258,6 @@ fn create_vmm_and_vcpus(
     vcpu_count: u8,
     sev_enabled: bool,
     snp: bool,
-    encryption: bool,
     timestamp: TimestampUs,
     policy: u32,
     dh_cert: &mut Option<std::fs::File>,
@@ -270,7 +270,7 @@ fn create_vmm_and_vcpus(
 
     let mut sev = None;
     if sev_enabled {
-        let mut sev_dev = Sev::new(vm.fd().clone(), snp, encryption, timestamp, policy);
+        let mut sev_dev = Sev::new(vm.fd().clone(), snp, timestamp, policy);
         if !snp {
             sev_dev.sev_init(session, dh_cert).unwrap();
         } else {
@@ -395,11 +395,6 @@ pub fn build_microvm_for_boot(
     #[allow(unused_mut)]
     let mut boot_cmdline = boot_config.cmdline.clone();
 
-    let encryption = match &vm_resources.sev {
-        None => false,
-        Some(cfg) => cfg.encryption,
-    };
-
     let policy: u32 = match &vm_resources.sev {
         None => 0,
         Some(cfg) => cfg.policy,
@@ -436,15 +431,20 @@ pub fn build_microvm_for_boot(
         vcpu_config.vcpu_count,
         sev_enabled,
         snp,
-        encryption,
         t_init.clone(),
         policy,
         &mut dh_cert,
         &mut session,
     )?;
+
     let mut kernel_len: u64 = 0;
-    #[cfg(target_arch = "x86_64")]
     if sev_enabled {
+        let kernel_type = attach_fw_cfg_device(
+            &mut vmm,
+            boot_config,
+            &vm_resources.sev.as_ref().unwrap().hashes_path,
+        )?;
+
         kernel_len = vmm
             .setup_sev(
                 &vm_resources.sev.as_ref().unwrap().firmware_path,
@@ -453,6 +453,7 @@ pub fn build_microvm_for_boot(
                     .try_clone()
                     .map_err(|err| StartMicrovmError::Internal(Error::KernelFile(err)))
                     .unwrap(),
+                kernel_type,
                 &initrd,
             )
             .unwrap();
@@ -466,13 +467,7 @@ pub fn build_microvm_for_boot(
         attach_debug_port_device(&mut vmm, t_init)?;
     }
 
-    if sev_enabled {
-        attach_fw_cfg_device(
-            &mut vmm,
-            boot_config,
-            &vm_resources.sev.as_ref().unwrap().hashes_path,
-        )?;
-    }
+    
 
     if let Some(balloon) = vm_resources.balloon.get() {
         attach_balloon_device(&mut vmm, &mut boot_cmdline, balloon, event_manager)?;
@@ -631,7 +626,6 @@ pub fn build_microvm_from_snapshot(
         track_dirty_pages,
         false,
         vcpu_count,
-        false,
         false,
         false,
         TimestampUs::default(),
@@ -1147,7 +1141,7 @@ pub(crate) fn attach_fw_cfg_device(
     vmm: &mut Vmm,
     boot_config: &BootConfig,
     hashes_path: &String,
-) -> std::result::Result<(), StartMicrovmError> {
+) -> std::result::Result<KernelType, StartMicrovmError> {
     use self::StartMicrovmError::*;
 
     let fw_cfg = Arc::new(Mutex::new(devices::pseudo::FwCfg::new(
@@ -1157,11 +1151,13 @@ pub(crate) fn attach_fw_cfg_device(
         &mut vmm.sev,
     )));
 
+    let kernel_type = fw_cfg.try_lock().unwrap().kernel_type();
+
     vmm.pio_device_manager
         .io_bus
         .insert(fw_cfg, devices::pseudo::FW_CFG_REG, 0x1)
         .map_err(RegisterPioDevice)?;
-    Ok(())
+    Ok(kernel_type)
 }
 
 fn attach_block_devices<'a>(
