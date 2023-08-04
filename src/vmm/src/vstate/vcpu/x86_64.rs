@@ -592,6 +592,29 @@ impl KvmVcpu {
                         gfn = (gfn << 12) >> 21;
                     }
 
+                    if ghcb_msr == 0x0000000000000014 {
+                        //this is the first timestamp for firmware entry
+                        if let Some(pio_bus) = &self.pio_bus {
+                            pio_bus.write(0x80, &[0x31]);
+                        }
+                        return Ok(VcpuEmulation::Handled);
+                    }
+
+                    if ghcb_msr == 0x0030000000000014 {
+                        if let Some(pio_bus) = &self.pio_bus {
+                            pio_bus.write(0x80, &[0x39]);
+                        }
+
+                        return Ok(VcpuEmulation::Handled);
+                    }
+                    if ghcb_msr == 0x0040000000000014 {
+                        if let Some(pio_bus) = &self.pio_bus {
+                            pio_bus.write(0x80, &[0x40]);
+                        }
+
+                        return Ok(VcpuEmulation::Handled);
+                    }
+
                     Sev::set_page_state(vm_fd, gfn, page_size, op == 1);
                     return Ok(VcpuEmulation::Handled);
                 }
