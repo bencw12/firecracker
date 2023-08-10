@@ -467,8 +467,6 @@ pub fn build_microvm_for_boot(
         attach_debug_port_device(&mut vmm, t_init)?;
     }
 
-    
-
     if let Some(balloon) = vm_resources.balloon.get() {
         attach_balloon_device(&mut vmm, &mut boot_cmdline, balloon, event_manager)?;
     }

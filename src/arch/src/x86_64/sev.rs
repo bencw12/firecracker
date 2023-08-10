@@ -318,12 +318,7 @@ struct Ghcb {
 
 impl Sev {
     ///Initialize SEV
-    pub fn new(
-        vm_fd: Arc<VmFd>,
-        snp: bool,
-        timestamp: TimestampUs,
-        policy: u32,
-    ) -> Self {
+    pub fn new(vm_fd: Arc<VmFd>, snp: bool, timestamp: TimestampUs, policy: u32) -> Self {
         //Open /dev/sev
 
         info!("Initializing new SEV guest context: policy 0x{:x}", policy);
@@ -606,7 +601,6 @@ impl Sev {
 
     /// Insert secrets page
     pub fn snp_insert_secrets_page(&mut self, guest_mem: &GuestMemoryMmap) -> SevResult<()> {
-
         if !self.snp {
             return Ok(());
         }
@@ -755,7 +749,7 @@ impl Sev {
             } else {
                 self.launch_update_data(region.start, region.len.try_into().unwrap(), guest_mem)?;
             }
-            
+
             if region.start == FIRMWARE_ADDR {
                 let now_tm_us = TimestampUs::default();
                 let real = now_tm_us.time_us - self.timestamp.time_us;
@@ -765,7 +759,6 @@ impl Sev {
                     real, cpu
                 );
             }
-
 
             entry = self.measured_regions.pop();
         }
@@ -853,9 +846,8 @@ impl Sev {
 
     /// Encrypt VMSA
     pub fn launch_update_vmsa(&mut self) -> SevResult<()> {
-
         if !self.es {
-            return Ok(())
+            return Ok(());
         }
 
         if self.state != State::LaunchUpdate {
@@ -1028,11 +1020,10 @@ impl Sev {
     pub fn load_kernel_and_initrd(
         &mut self,
         kernel_file: &mut File,
-        is_bzimage: bool, 
+        is_bzimage: bool,
         guest_mem: &GuestMemoryMmap,
         initrd: &Option<InitrdConfig>,
     ) -> SevResult<u64> {
-
         let mut len = 0;
 
         if is_bzimage {

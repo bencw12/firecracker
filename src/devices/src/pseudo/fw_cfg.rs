@@ -415,7 +415,7 @@ impl BusDevice for FwCfg {
                 Ok(cmd) => {
                     self.cmd = Some(cmd);
                     info!("FW_CFG: {:?}", self.cmd);
-                },
+                }
                 _ => warn!("FwCfg invalid command"),
             }
         }

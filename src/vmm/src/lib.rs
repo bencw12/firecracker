@@ -663,7 +663,12 @@ impl Vmm {
                 .map_err(|err| Error::SevSetup(err))?;
 
             return Ok(sev
-                .load_kernel_and_initrd(&mut kernel_file, kernel_type == KernelType::BzImage, &self.guest_memory, initrd)
+                .load_kernel_and_initrd(
+                    &mut kernel_file,
+                    kernel_type == KernelType::BzImage,
+                    &self.guest_memory,
+                    initrd,
+                )
                 .map_err(|err| Error::SevSetup(err))?);
         }
         Ok(0u64)
