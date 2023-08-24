@@ -146,7 +146,8 @@ pub struct FwCfg {
 impl FwCfg {
     pub fn new(
         mut kernel: File,
-        hashes_path: &String,
+        kernel_hashes_path: &String,
+        initrd_hashes_path: &Option<String>,
         mem: GuestMemoryMmap,
         sev: &mut Option<Sev>,
     ) -> Self {
@@ -176,7 +177,7 @@ impl FwCfg {
             fw_cfg.get_bzimage_size().unwrap();
         }
 
-        fw_cfg.add_kernel_hashes(hashes_path, sev);
+        fw_cfg.add_kernel_hashes(kernel_hashes_path, initrd_hashes_path, sev);
 
         fw_cfg
     }
@@ -185,16 +186,33 @@ impl FwCfg {
         self.kernel_type
     }
 
-    fn add_kernel_hashes(&self, hashes_path: &String, sev: &mut Option<Sev>) {
-        let hashes_base_addr = GuestAddress(arch::x86_64::sev::FIRMWARE_ADDR.0 - 32);
+    fn add_kernel_hashes(
+        &self,
+        kernel_hashes_path: &String,
+        initrd_hashes_path: &Option<String>,
+        sev: &mut Option<Sev>,
+    ) {
+        let mut hashes_base_address = GuestAddress(arch::x86_64::sev::FIRMWARE_ADDR.0 - 32);
+        let mut hashes_len = 32;
 
-        let mut hashes = File::open(hashes_path).unwrap();
+        let mut kernel_hashes = File::open(kernel_hashes_path).unwrap();
         self.mem
-            .read_exact_from(hashes_base_addr, &mut hashes, 32)
+            .read_exact_from(hashes_base_address, &mut kernel_hashes, 32)
             .unwrap();
 
+        //add initrd hashes if booting with initrd
+        if let Some(initrd_hashes_path) = initrd_hashes_path.as_ref() {
+            hashes_base_address = GuestAddress(hashes_base_address.0 - 32);
+            hashes_len = 64;
+
+            let mut initrd_hashes = File::open(initrd_hashes_path).unwrap();
+            self.mem
+                .read_exact_from(hashes_base_address, &mut initrd_hashes, 32)
+                .unwrap();
+        }
+
         if let Some(sev) = sev.as_mut() {
-            sev.add_measured_region(hashes_base_addr, 32);
+            sev.add_measured_region(hashes_base_address, hashes_len);
         }
     }
 

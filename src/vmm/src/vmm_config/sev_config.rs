@@ -6,8 +6,10 @@ use serde::{Deserialize, Serialize};
 pub struct SevConfig {
     /// Path to SEV firmware
     pub firmware_path: String,
-    /// Path to hashes
-    pub hashes_path: String,
+    /// Path to kernel hash
+    pub kernel_hash_path: String,
+    /// Path to initrd hash
+    pub initrd_hash_path: Option<String>,
     /// Path to guest launch blob
     pub session_path: Option<String>,
     /// Path to guest DH public key

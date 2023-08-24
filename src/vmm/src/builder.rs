@@ -442,7 +442,8 @@ pub fn build_microvm_for_boot(
         let kernel_type = attach_fw_cfg_device(
             &mut vmm,
             boot_config,
-            &vm_resources.sev.as_ref().unwrap().hashes_path,
+            &vm_resources.sev.as_ref().unwrap().kernel_hash_path,
+            &vm_resources.sev.as_ref().unwrap().initrd_hash_path,
         )?;
 
         kernel_len = vmm
@@ -1138,13 +1139,15 @@ pub(crate) fn attach_debug_port_device(
 pub(crate) fn attach_fw_cfg_device(
     vmm: &mut Vmm,
     boot_config: &BootConfig,
-    hashes_path: &String,
+    kernel_hashes_path: &String,
+    initrd_hashes_path: &Option<String>,
 ) -> std::result::Result<KernelType, StartMicrovmError> {
     use self::StartMicrovmError::*;
 
     let fw_cfg = Arc::new(Mutex::new(devices::pseudo::FwCfg::new(
         boot_config.kernel_file.try_clone().unwrap(),
-        hashes_path,
+        kernel_hashes_path,
+        initrd_hashes_path,
         vmm.guest_memory().clone(),
         &mut vmm.sev,
     )));
