@@ -66,6 +66,7 @@ use crate::resources::VmResources;
 use crate::snapshot::Persist;
 use crate::utils::u64_to_usize;
 use crate::vmm_config::boot_source::BootConfig;
+use crate::vmm_config::function::FuncArgs;
 use crate::vmm_config::instance_info::InstanceInfo;
 use crate::vmm_config::machine_config::{VmConfig, VmConfigError};
 use crate::vstate::memory::{GuestAddress, GuestMemory, GuestMemoryMmap};
@@ -300,7 +301,11 @@ pub fn build_microvm_for_boot(
     // to maintain the same MMIO address referenced in the documentation
     // and tests.
     if vm_resources.boot_timer {
-        attach_boot_timer_device(&mut vmm, request_ts)?;
+        attach_boot_timer_device(&mut vmm, request_ts.clone())?;
+    }
+
+    if let Some(func_args) = &vm_resources.func_args {
+        attach_func_args_device(&mut vmm, request_ts, func_args.clone())?;
     }
 
     if let Some(balloon) = vm_resources.balloon.get() {
@@ -896,6 +901,22 @@ pub(crate) fn attach_boot_timer_device(
 
     vmm.mmio_device_manager
         .register_mmio_boot_timer(&mut vmm.resource_allocator, boot_timer)
+        .map_err(RegisterMmioDevice)?;
+
+    Ok(())
+}
+
+pub(crate) fn attach_func_args_device(
+    vmm: &mut Vmm,
+    request_ts: TimestampUs,
+    func_args: FuncArgs,
+) -> Result<(), StartMicrovmError> {
+    use self::StartMicrovmError::*;
+
+    let dev = crate::devices::pseudo::FuncArgsDevice::new(request_ts, func_args);
+
+    vmm.mmio_device_manager
+        .register_mmio_func_args(&mut vmm.resource_allocator, dev)
         .map_err(RegisterMmioDevice)?;
 
     Ok(())

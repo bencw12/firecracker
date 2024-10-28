@@ -20,6 +20,7 @@ use crate::vmm_config::boot_source::{
 };
 use crate::vmm_config::drive::*;
 use crate::vmm_config::entropy::*;
+use crate::vmm_config::function::*;
 use crate::vmm_config::instance_info::InstanceInfo;
 use crate::vmm_config::machine_config::{
     HugePageConfig, MachineConfig, MachineConfigUpdate, VmConfig, VmConfigError,
@@ -70,6 +71,8 @@ pub struct VmmConfig {
     block_devices: Vec<BlockDeviceConfig>,
     #[serde(rename = "boot-source")]
     boot_source: BootSourceConfig,
+    #[serde(rename = "func-args")]
+    func_args: Option<FuncArgsConfig>,
     #[serde(rename = "cpu-config")]
     cpu_config: Option<PathBuf>,
     #[serde(rename = "logger")]
@@ -109,6 +112,8 @@ pub struct VmResources {
     pub net_builder: NetBuilder,
     /// The entropy device builder.
     pub entropy: EntropyDeviceBuilder,
+    /// The function and arguments to run in the guest.
+    pub func_args: Option<FuncArgs>,
     /// The optional Mmds data store.
     // This is initialised on demand (if ever used), so that we don't allocate it unless it's
     // actually used.
@@ -159,6 +164,8 @@ impl VmResources {
         }
 
         resources.build_boot_source(vmm_config.boot_source)?;
+
+        resources.build_func_args(vmm_config.func_args);
 
         for drive_config in vmm_config.block_devices.into_iter() {
             resources.set_block_device(drive_config)?;
@@ -351,6 +358,15 @@ impl VmResources {
         self.balloon.set(config)
     }
 
+    /// Obtains the function + arguments for executing in the guest.
+    pub fn build_func_args(&mut self, func_args_cfg: Option<FuncArgsConfig>) {
+        if func_args_cfg.is_some() {
+            self.func_args = Some(FuncArgs::new(&func_args_cfg.unwrap()));
+        } else {
+            self.func_args = None;
+        }
+    }
+
     /// Obtains the boot source hooks (kernel fd, command line creation and validation).
     pub fn build_boot_source(
         &mut self,
@@ -525,6 +541,7 @@ impl From<&VmResources> for VmmConfig {
             logger: None,
             machine_config: Some(MachineConfig::from(&resources.vm_config)),
             metrics: None,
+            func_args: None,
             mmds_config: resources.mmds_config(),
             net_devices: resources.net_builder.configs(),
             vsock_device: resources.vsock.config(),

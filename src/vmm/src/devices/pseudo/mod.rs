@@ -5,3 +5,7 @@
 mod boot_timer;
 
 pub use self::boot_timer::BootTimer;
+
+mod function;
+
+pub use self::function::FuncArgsDevice;

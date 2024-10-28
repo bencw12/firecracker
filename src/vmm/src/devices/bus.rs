@@ -55,7 +55,7 @@ use event_manager::{EventOps, Events, MutEventSubscriber};
 #[cfg(target_arch = "aarch64")]
 use super::legacy::RTCDevice;
 use super::legacy::{I8042Device, SerialDevice};
-use super::pseudo::BootTimer;
+use super::pseudo::{BootTimer, FuncArgsDevice};
 use super::virtio::mmio::MmioTransport;
 
 #[derive(Debug)]
@@ -64,6 +64,7 @@ pub enum BusDevice {
     #[cfg(target_arch = "aarch64")]
     RTCDevice(RTCDevice),
     BootTimer(BootTimer),
+    FuncArgsDevice(FuncArgsDevice),
     MmioTransport(MmioTransport),
     Serial(SerialDevice<std::io::Stdin>),
     #[cfg(test)]
@@ -121,6 +122,12 @@ impl BusDevice {
             _ => None,
         }
     }
+    pub fn func_args_ref(&self) -> Option<&FuncArgsDevice> {
+        match self {
+            Self::FuncArgsDevice(x) => Some(x),
+            _ => None,
+        }
+    }
     pub fn mmio_transport_ref(&self) -> Option<&MmioTransport> {
         match self {
             Self::MmioTransport(x) => Some(x),
@@ -153,6 +160,12 @@ impl BusDevice {
             _ => None,
         }
     }
+    pub fn func_args_mut(&mut self) -> Option<&mut FuncArgsDevice> {
+        match self {
+            Self::FuncArgsDevice(x) => Some(x),
+            _ => None,
+        }
+    }
     pub fn mmio_transport_mut(&mut self) -> Option<&mut MmioTransport> {
         match self {
             Self::MmioTransport(x) => Some(x),
@@ -172,6 +185,7 @@ impl BusDevice {
             #[cfg(target_arch = "aarch64")]
             Self::RTCDevice(x) => x.bus_read(offset, data),
             Self::BootTimer(x) => x.bus_read(offset, data),
+            Self::FuncArgsDevice(x) => x.bus_read(offset, data),
             Self::MmioTransport(x) => x.bus_read(offset, data),
             Self::Serial(x) => x.bus_read(offset, data),
             #[cfg(test)]
@@ -187,6 +201,7 @@ impl BusDevice {
             #[cfg(target_arch = "aarch64")]
             Self::RTCDevice(x) => x.bus_write(offset, data),
             Self::BootTimer(x) => x.bus_write(offset, data),
+            Self::FuncArgsDevice(x) => x.bus_write(offset, data),
             Self::MmioTransport(x) => x.bus_write(offset, data),
             Self::Serial(x) => x.bus_write(offset, data),
             #[cfg(test)]

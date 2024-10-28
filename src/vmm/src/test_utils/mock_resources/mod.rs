@@ -45,6 +45,7 @@ impl MockBootSourceConfig {
             kernel_image_path: kernel_image_path(None),
             initrd_path: None,
             boot_args: None,
+            func_args: None,
         })
     }
 

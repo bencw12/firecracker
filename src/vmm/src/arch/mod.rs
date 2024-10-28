@@ -41,6 +41,8 @@ pub enum DeviceType {
     Rtc,
     /// Device Type: BootTimer.
     BootTimer,
+    /// Device Type: FuncArgsDevice
+    FuncArgsDevice,
 }
 
 /// Type for passing information about the initrd in the guest memory.

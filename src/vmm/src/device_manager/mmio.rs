@@ -26,7 +26,7 @@ use crate::arch::DeviceType;
 use crate::arch::DeviceType::Virtio;
 #[cfg(target_arch = "aarch64")]
 use crate::devices::legacy::RTCDevice;
-use crate::devices::pseudo::BootTimer;
+use crate::devices::pseudo::{BootTimer, FuncArgsDevice};
 use crate::devices::virtio::balloon::Balloon;
 use crate::devices::virtio::block::device::Block;
 use crate::devices::virtio::device::VirtioDevice;
@@ -354,6 +354,26 @@ impl MMIODeviceManager {
             identifier,
             device_info,
             Arc::new(Mutex::new(BusDevice::BootTimer(device))),
+        )
+    }
+
+    /// Register a function args device.
+    pub fn register_mmio_func_args(
+        &mut self,
+        resource_allocator: &mut ResourceAllocator,
+        device: FuncArgsDevice,
+    ) -> Result<(), MmioError> {
+        // Attach a new boot timer device.
+        let device_info = self.allocate_mmio_resources(resource_allocator, 0)?;
+
+        let identifier = (
+            DeviceType::FuncArgsDevice,
+            DeviceType::FuncArgsDevice.to_string(),
+        );
+        self.register_mmio_device(
+            identifier,
+            device_info,
+            Arc::new(Mutex::new(BusDevice::FuncArgsDevice(device))),
         )
     }
 

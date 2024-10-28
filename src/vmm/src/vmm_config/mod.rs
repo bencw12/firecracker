@@ -20,6 +20,8 @@ pub mod boot_source;
 pub mod drive;
 /// Wrapper for configuring the entropy device attached to the microVM.
 pub mod entropy;
+/// Wrapper for serverless function running in the guest.
+pub mod function;
 /// Wrapper over the microVM general information attached to the microVM.
 pub mod instance_info;
 /// Wrapper for configuring the memory and CPU of the microVM.

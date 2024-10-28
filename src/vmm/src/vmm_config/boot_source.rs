@@ -31,6 +31,8 @@ pub struct BootSourceConfig {
     /// The boot arguments to pass to the kernel. If this field is uninitialized,
     /// DEFAULT_KERNEL_CMDLINE is used.
     pub boot_args: Option<String>,
+    /// Slight hack, function command/arguments for the guest
+    pub func_args: Option<String>,
 }
 
 /// Errors associated with actions on `BootSourceConfig`.
@@ -65,6 +67,8 @@ pub struct BootConfig {
     pub kernel_file: File,
     /// The descriptor to the initrd file, if there is one.
     pub initrd_file: Option<File>,
+    /// function args string
+    pub func_args: Option<String>,
 }
 
 impl BootConfig {
@@ -89,10 +93,13 @@ impl BootConfig {
             linux_loader::cmdline::Cmdline::try_from(cmdline_str, crate::arch::CMDLINE_MAX_SIZE)
                 .map_err(|err| InvalidKernelCommandLine(err.to_string()))?;
 
+        let func_args = cfg.func_args.clone();
+
         Ok(BootConfig {
             cmdline,
             kernel_file,
             initrd_file,
+            func_args,
         })
     }
 }
