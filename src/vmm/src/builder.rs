@@ -145,7 +145,7 @@ impl Display for StartMicrovmError {
                 write!(f, "Cannot open the block device backing file. {}", err_msg)
             }
             RegisterEvent(err) => write!(f, "Cannot register EventHandler. {:?}", err),
-	    RegisterPioDevice(err) => write!(f, "Cannot register PIO device {:?}", err),
+            RegisterPioDevice(err) => write!(f, "Cannot register PIO device {:?}", err),
             RegisterMmioDevice(err) => {
                 let mut err_msg = format!("{}", err);
                 err_msg = err_msg.replace("\"", "");
@@ -724,17 +724,18 @@ pub(crate) fn attach_boot_timer_device(
 }
 
 pub(crate) fn attach_fault_tracer_device(
-    vmm :&mut Vmm
+    vmm: &mut Vmm,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
-    let dev = Arc::new(
-	Mutex::new(devices::pseudo::FaultTracer::new(vmm.guest_memory().clone())));
+    let dev = Arc::new(Mutex::new(devices::pseudo::FaultTracer::new(
+        vmm.guest_memory().clone(),
+    )));
 
     vmm.pio_device_manager
-	.io_bus
-	.insert(dev, devices::pseudo::TRACE_PORT, 0x8)
-	.map_err(RegisterPioDevice)?;
+        .io_bus
+        .insert(dev, devices::pseudo::TRACE_PORT, 0x8)
+        .map_err(RegisterPioDevice)?;
 
     Ok(())
 }

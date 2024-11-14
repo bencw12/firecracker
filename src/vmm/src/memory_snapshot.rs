@@ -12,11 +12,11 @@ use std::io::SeekFrom;
 
 use logger::info;
 // for userfaultfd
-use std::path::PathBuf;
+use passfd::FdPassingExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixListener;
+use std::path::PathBuf;
 use userfaultfd::UffdBuilder;
-use passfd::FdPassingExt;
 
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
@@ -62,7 +62,11 @@ where
     ) -> std::result::Result<(), Error>;
     /// Creates a GuestMemoryMmap given a `file` containing the data
     /// and a `state` containing mapping information.
-    fn restore(file: &File, state: &GuestMemoryState, enable_user_page_faults: bool) -> std::result::Result<Self, Error>;
+    fn restore(
+        file: &File,
+        state: &GuestMemoryState,
+        enable_user_page_faults: bool,
+    ) -> std::result::Result<Self, Error>;
     /// Registers guest memory for hanlding page faults with an external user-level process
     fn register_for_upf(&self, sock_file_path: &PathBuf) -> std::result::Result<(), Error>;
 }
@@ -173,7 +177,11 @@ impl SnapshotMemory for GuestMemoryMmap {
 
     /// Creates a GuestMemoryMmap given a `file` containing the data
     /// and a `state` containing mapping information.
-    fn restore(file: &File, state: &GuestMemoryState, enable_user_page_faults: bool) -> std::result::Result<Self, Error> {
+    fn restore(
+        file: &File,
+        state: &GuestMemoryState,
+        enable_user_page_faults: bool,
+    ) -> std::result::Result<Self, Error> {
         let mut mmap_regions = Vec::new();
         for region in state.regions.iter() {
             // userfaultfd requires allocating anonymous memory
@@ -204,21 +212,29 @@ impl SnapshotMemory for GuestMemoryMmap {
     /// with an external user-level process.
     fn register_for_upf(&self, sock_file_path: &PathBuf) -> std::result::Result<(), Error> {
         self.with_regions(|_, region| {
-            info!("Guest memory size={:?}MB, base_address={:?}, last_addr={:?}",
-                region.len()/1024/1024,
+            info!(
+                "Guest memory size={:?}MB, base_address={:?}, last_addr={:?}",
+                region.len() / 1024 / 1024,
                 region.get_host_address(region.to_region_addr(region.start_addr()).unwrap()),
-                region.get_host_address(region.to_region_addr(region.last_addr()).unwrap()));
+                region.get_host_address(region.to_region_addr(region.last_addr()).unwrap())
+            );
 
             let uffd = UffdBuilder::new()
-            .close_on_exec(true)
-            .non_blocking(true)
-            .create()
-            .expect("uffd creation");
+                .close_on_exec(true)
+                .non_blocking(true)
+                .create()
+                .expect("uffd creation");
 
-            let addr = region.get_host_address(region.to_region_addr(region.start_addr()).unwrap()).unwrap();
+            let addr = region
+                .get_host_address(region.to_region_addr(region.start_addr()).unwrap())
+                .unwrap();
             let len = region.len();
-            info!("Host address of the region's start = {:p}, len={:?}", addr, len);
-            uffd.register(addr as *mut u8 as _, len as u64 as _).expect("uffd.register()");
+            info!(
+                "Host address of the region's start = {:p}, len={:?}",
+                addr, len
+            );
+            uffd.register(addr as *mut u8 as _, len as u64 as _)
+                .expect("uffd.register()");
 
             let listener = UnixListener::bind(sock_file_path).unwrap();
             let (stream, _) = listener.accept().unwrap();
@@ -227,8 +243,11 @@ impl SnapshotMemory for GuestMemoryMmap {
             info!("Sent the fd!");
 
             // Cause a page fault on the first page to communicate the start_addr's hVA
-            unsafe{
-                print!("after reg: ptr={:p}, mem value = {:?}, len={:?}", addr, *addr, len)
+            unsafe {
+                print!(
+                    "after reg: ptr={:p}, mem value = {:?}, len={:?}",
+                    addr, *addr, len
+                )
             }
 
             Ok(())
