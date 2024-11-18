@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 
 use super::mmio::*;
 
+use arch::DeviceType;
 use devices::pseudo::BootTimer;
+use devices::pseudo::{FaultTracer, FaultTracerState};
 use devices::virtio::block::persist::{BlockConstructorArgs, BlockState};
 use devices::virtio::block::Block;
 use devices::virtio::net::persist::{Error as NetError, NetConstructorArgs, NetState};
@@ -82,6 +84,17 @@ pub struct ConnectedVsockState {
 }
 
 #[derive(Versionize)]
+/// Holds the state of a fault tracer device connected to the MMIO space.
+pub struct ConnectedFaultTracerState {
+    /// Device identifier.
+    pub device_id: String,
+    /// Device state.
+    pub device_state: FaultTracerState,
+    /// VmmResources.
+    pub mmio_slot: MMIODeviceInfo,
+}
+
+#[derive(Versionize)]
 /// Holds the device states.
 pub struct DeviceStates {
     /// Block device states.
@@ -90,6 +103,8 @@ pub struct DeviceStates {
     pub net_devices: Vec<ConnectedNetState>,
     /// Vsock device state.
     pub vsock_device: Option<ConnectedVsockState>,
+    /// Fault tracer device state.
+    pub fault_tracer_device: Option<ConnectedFaultTracerState>,
 }
 
 pub struct MMIODevManagerConstructorArgs<'a> {
@@ -108,6 +123,7 @@ impl<'a> Persist<'a> for MMIODeviceManager {
             block_devices: Vec::new(),
             net_devices: Vec::new(),
             vsock_device: None,
+            fault_tracer_device: None,
         };
         for ((device_type, device_id), device_info) in self.get_device_info().iter() {
             let bus_device = self
@@ -119,6 +135,17 @@ impl<'a> Persist<'a> for MMIODeviceManager {
 
             if let Some(boot_timer) = bus_device.as_any().downcast_ref::<BootTimer>() {
                 // No need to save BootTimer state.
+                continue;
+            }
+
+            if let Some(fault_tracer) = bus_device.as_any().downcast_ref::<FaultTracer>() {
+                // save fault tracer state
+                let tracer_state = fault_tracer.save();
+                states.fault_tracer_device = Some(ConnectedFaultTracerState {
+                    device_id: device_id.clone(),
+                    device_state: tracer_state,
+                    mmio_slot: device_info.clone(),
+                });
                 continue;
             }
 
@@ -192,6 +219,27 @@ impl<'a> Persist<'a> for MMIODeviceManager {
         dev_manager
             .register_new_mmio_boot_timer(boot_timer)
             .map_err(Error::DeviceManager)?;
+
+        if let Some(fault_tracer_state) = &state.fault_tracer_device {
+            let device_id = fault_tracer_state.device_id.clone();
+
+            let fault_tracer = Arc::new(Mutex::new(FaultTracer::from_state(
+                mem.clone(),
+                &fault_tracer_state.device_state,
+            )));
+
+            dev_manager
+                .register_mmio_device(
+                    (DeviceType::FaultTracer, device_id),
+                    fault_tracer_state.mmio_slot.clone(),
+                    fault_tracer,
+                )
+                .map_err(Error::DeviceManager)?;
+
+            // event_manager
+            // 	.add_subscriber(fault_tracer)
+            // 	.map_err(Error::EventManager);
+        }
 
         for block_state in &state.block_devices {
             let device = Arc::new(Mutex::new(

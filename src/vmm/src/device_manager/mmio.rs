@@ -12,7 +12,7 @@ use std::{fmt, io};
 #[cfg(target_arch = "aarch64")]
 use arch::aarch64::DeviceInfoForFDT;
 use arch::DeviceType;
-use devices::pseudo::BootTimer;
+use devices::pseudo::{BootTimer, FaultTracer};
 use devices::{virtio::MmioTransport, BusDevice};
 use kernel::cmdline as kernel_cmdline;
 use kvm_ioctls::{IoEventAddress, VmFd};
@@ -118,7 +118,7 @@ impl MMIODeviceManager {
         Ok(slot)
     }
 
-    fn register_mmio_device(
+    pub fn register_mmio_device(
         &mut self,
         identifier: (DeviceType, String),
         slot: MMIODeviceInfo,
@@ -221,6 +221,21 @@ impl MMIODeviceManager {
             .map_err(Error::Cmdline)
     }
 
+    #[cfg(target_arch = "x86_64")]
+    /// Append the registered early console to the kernel cmdline.
+    pub fn add_mmio_fault_tracer_to_cmdline(
+        &self,
+        cmdline: &mut kernel_cmdline::Cmdline,
+    ) -> Result<()> {
+        let mmio_slot = self
+            .id_to_dev_info
+            .get(&(DeviceType::FaultTracer, DeviceType::FaultTracer.to_string()))
+            .ok_or(Error::DeviceNotFound)?;
+        cmdline
+            .insert("fault_tracer", &format!("0x{:08x}", mmio_slot.addr))
+            .map_err(Error::Cmdline)
+    }
+
     #[cfg(target_arch = "aarch64")]
     /// Create and register a new MMIO RTC device.
     pub fn register_new_mmio_rtc(&mut self, vm: &VmFd) -> Result<()> {
@@ -242,6 +257,19 @@ impl MMIODeviceManager {
 
         let identifier = (DeviceType::BootTimer, DeviceType::BootTimer.to_string());
         self.register_mmio_device(identifier, slot, Arc::new(Mutex::new(device)))
+    }
+
+    /// Create and register the fault tracer device.
+    pub fn register_new_mmio_fault_tracer(
+        &mut self,
+        device: FaultTracer,
+        _cmdline: &mut kernel_cmdline::Cmdline,
+    ) -> Result<()> {
+        let slot = self.allocate_new_slot(0)?;
+        let identifier = (DeviceType::FaultTracer, DeviceType::FaultTracer.to_string());
+        self.register_mmio_device(identifier, slot, Arc::new(Mutex::new(device)))?;
+        #[cfg(target_arch = "x86_64")]
+        self.add_mmio_fault_tracer_to_cmdline(_cmdline)
     }
 
     /// Gets the information of the devices registered up to some point in time.

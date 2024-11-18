@@ -5,4 +5,4 @@ mod boot_timer;
 mod fault_trace;
 
 pub use self::boot_timer::BootTimer;
-pub use self::fault_trace::{FaultTracer, TRACE_PORT};
+pub use self::fault_trace::{FaultTracer, FaultTracerState, TRACE_PORT};

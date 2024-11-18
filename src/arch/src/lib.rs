@@ -43,6 +43,8 @@ pub enum DeviceType {
     RTC,
     /// Device Type: BootTimer.
     BootTimer,
+    /// Device Type: FaultTracer.
+    FaultTracer,
 }
 
 /// Type for passing information about the initrd in the guest memory.

@@ -1,17 +1,29 @@
 use crate::BusDevice;
 use logger::info;
+use snapshot::Persist;
 use std::convert::TryInto;
 use std::fs::{self, File};
 use std::io::{ErrorKind, Write};
+use versionize::{VersionMap, Versionize, VersionizeError, VersionizeResult};
+use versionize_derive::Versionize;
 use vm_memory::{ByteValued, Bytes, GuestAddress, GuestMemoryMmap};
 
 pub const TRACE_PORT: u64 = 0x80;
 
-#[derive(Debug)]
-enum State {
-    AddrHigh,
-    AddrLow,
+#[derive(Debug, Versionize, Clone, Copy)]
+pub enum State {
+    Init,
     Tracing,
+}
+
+#[derive(Versionize)]
+pub struct FaultTracerState {
+    pub trace_base: u64,
+    pub state: State,
+}
+
+pub struct FaultTracerConstructorArgs {
+    pub mem: GuestMemoryMmap,
 }
 
 #[derive(Debug)]
@@ -46,16 +58,23 @@ impl FaultTracer {
         FaultTracer {
             mem,
             trace_base: 0,
-            state: State::AddrHigh,
+            state: State::Init,
             log,
         }
+    }
+
+    pub fn from_state(mem: GuestMemoryMmap, state: &FaultTracerState) -> Self {
+        let mut tracer = Self::new(mem);
+        tracer.trace_base = state.trace_base;
+        tracer.state = state.state;
+        return tracer;
     }
 
     fn read_trace(&mut self, num_entries: usize) {
         let mut ents = Vec::with_capacity(num_entries);
         let ent_size = std::mem::size_of::<Fault>();
 
-        info!("reading trace");
+        info!("reading trace: {}", num_entries);
 
         for i in 0..num_entries {
             let addr = GuestAddress(self.trace_base + ((ent_size * i) as u64));
@@ -94,22 +113,36 @@ impl BusDevice for FaultTracer {
 
     fn write(&mut self, _offset: u64, data: &[u8]) {
         match self.state {
-            State::AddrHigh => {
-                let high = u32::from_le_bytes(data.try_into().unwrap());
-                self.trace_base = high as u64;
-                self.state = State::AddrLow;
-                info!("upper 4 bytes = 0x{:x}", high);
-            }
-            State::AddrLow => {
-                let low = u32::from_le_bytes(data.try_into().unwrap());
-                self.trace_base = (self.trace_base << 32) | low as u64;
+            State::Init => {
+                self.trace_base = u64::from_le_bytes(data.try_into().unwrap());
                 self.state = State::Tracing;
-                info!("full address = 0x{:x}", self.trace_base);
+                info!("trace_base=0x{:x}", self.trace_base);
             }
             State::Tracing => {
-                let num_entries = u32::from_le_bytes(data.try_into().unwrap());
+                let num_entries = u64::from_le_bytes(data.try_into().unwrap());
                 self.read_trace(num_entries as usize);
             }
         }
+    }
+}
+
+impl Persist<'_> for FaultTracer {
+    type State = FaultTracerState;
+    type ConstructorArgs = FaultTracerConstructorArgs;
+    type Error = ();
+    fn save(&self) -> Self::State {
+        FaultTracerState {
+            trace_base: self.trace_base,
+            state: self.state,
+        }
+    }
+
+    fn restore(
+        constructor_args: Self::ConstructorArgs,
+        state: &Self::State,
+    ) -> std::result::Result<Self, Self::Error> {
+        info!("FAULT TRACER RESTORE");
+        let tracer = Self::from_state(constructor_args.mem, state);
+        Ok(tracer)
     }
 }

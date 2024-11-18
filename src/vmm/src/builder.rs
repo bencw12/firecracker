@@ -72,8 +72,6 @@ pub enum StartMicrovmError {
     RegisterEvent(EventManagerError),
     /// Cannot initialize a MMIO Device or add a device to the MMIO Bus or cmdline.
     RegisterMmioDevice(device_manager::mmio::Error),
-    /// Cannot initialize a PIO Device
-    RegisterPioDevice(devices::BusError),
     #[cfg(target_arch = "x86_64")]
     /// Cannot restore microvm state.
     RestoreMicrovmState(MicrovmStateError),
@@ -145,7 +143,6 @@ impl Display for StartMicrovmError {
                 write!(f, "Cannot open the block device backing file. {}", err_msg)
             }
             RegisterEvent(err) => write!(f, "Cannot register EventHandler. {:?}", err),
-            RegisterPioDevice(err) => write!(f, "Cannot register PIO device {:?}", err),
             RegisterMmioDevice(err) => {
                 let mut err_msg = format!("{}", err);
                 err_msg = err_msg.replace("\"", "");
@@ -311,7 +308,7 @@ pub fn build_microvm_for_boot(
     )?;
 
     attach_boot_timer_device(&mut vmm, request_ts)?;
-    attach_fault_tracer_device(&mut vmm)?;
+    attach_fault_tracer_device(&mut vmm, &mut boot_cmdline)?;
 
     attach_block_devices(
         &mut vmm,
@@ -725,17 +722,15 @@ pub(crate) fn attach_boot_timer_device(
 
 pub(crate) fn attach_fault_tracer_device(
     vmm: &mut Vmm,
+    cmdline: &mut KernelCmdline,
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
-    let dev = Arc::new(Mutex::new(devices::pseudo::FaultTracer::new(
-        vmm.guest_memory().clone(),
-    )));
+    let dev = devices::pseudo::FaultTracer::new(vmm.guest_memory().clone());
 
-    vmm.pio_device_manager
-        .io_bus
-        .insert(dev, devices::pseudo::TRACE_PORT, 0x8)
-        .map_err(RegisterPioDevice)?;
+    vmm.mmio_device_manager
+        .register_new_mmio_fault_tracer(dev, cmdline)
+        .map_err(RegisterMmioDevice)?;
 
     Ok(())
 }
