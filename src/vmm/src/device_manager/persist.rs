@@ -229,7 +229,8 @@ impl<'a> Persist<'a> for MMIODeviceManager {
             )));
 
             dev_manager
-                .register_mmio_device(
+                .register_mmio_fault_tracer_device(
+                    vm,
                     (DeviceType::FaultTracer, device_id),
                     fault_tracer_state.mmio_slot.clone(),
                     fault_tracer,

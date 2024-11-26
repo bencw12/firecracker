@@ -726,10 +726,10 @@ pub(crate) fn attach_fault_tracer_device(
 ) -> std::result::Result<(), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
-    let dev = devices::pseudo::FaultTracer::new(vmm.guest_memory().clone());
+    let dev = devices::pseudo::FaultTracer::new(vmm.guest_memory().clone()).unwrap(); // todo: don't panic
 
     vmm.mmio_device_manager
-        .register_new_mmio_fault_tracer(dev, cmdline)
+        .register_new_mmio_fault_tracer(vmm.vm.fd(), dev, cmdline)
         .map_err(RegisterMmioDevice)?;
 
     Ok(())

@@ -118,12 +118,32 @@ impl MMIODeviceManager {
         Ok(slot)
     }
 
-    pub fn register_mmio_device(
+    fn register_mmio_device(
         &mut self,
         identifier: (DeviceType, String),
         slot: MMIODeviceInfo,
         device: Arc<Mutex<dyn BusDevice>>,
     ) -> Result<()> {
+        self.bus
+            .insert(device, slot.addr, slot.len)
+            .map_err(Error::BusError)?;
+        self.id_to_dev_info.insert(identifier, slot);
+        Ok(())
+    }
+
+    pub fn register_mmio_fault_tracer_device(
+        &mut self,
+        vm: &VmFd,
+        identifier: (DeviceType, String),
+        slot: MMIODeviceInfo,
+        device: Arc<Mutex<FaultTracer>>,
+    ) -> Result<()> {
+        {
+            let locked_device = device.lock().unwrap();
+            vm.register_irqfd(locked_device.interrupt_evt(), slot.irqs[0])
+                .map_err(Error::RegisterIrqFd)?;
+        }
+
         self.bus
             .insert(device, slot.addr, slot.len)
             .map_err(Error::BusError)?;
@@ -227,12 +247,13 @@ impl MMIODeviceManager {
         &self,
         cmdline: &mut kernel_cmdline::Cmdline,
     ) -> Result<()> {
-        let mmio_slot = self
+        let slot = self
             .id_to_dev_info
             .get(&(DeviceType::FaultTracer, DeviceType::FaultTracer.to_string()))
             .ok_or(Error::DeviceNotFound)?;
+
         cmdline
-            .insert("fault_tracer", &format!("0x{:08x}", mmio_slot.addr))
+            .insert("fault_tracer", &format!("0x{:08x}", slot.addr))
             .map_err(Error::Cmdline)
     }
 
@@ -262,10 +283,15 @@ impl MMIODeviceManager {
     /// Create and register the fault tracer device.
     pub fn register_new_mmio_fault_tracer(
         &mut self,
+        vm: &VmFd,
         device: FaultTracer,
         _cmdline: &mut kernel_cmdline::Cmdline,
     ) -> Result<()> {
-        let slot = self.allocate_new_slot(0)?;
+        let slot = self.allocate_new_slot(1)?;
+        let interrupt_evt = device.interrupt_evt();
+        vm.register_irqfd(&interrupt_evt, slot.irqs[0])
+            .map_err(Error::RegisterIrqFd)?;
+
         let identifier = (DeviceType::FaultTracer, DeviceType::FaultTracer.to_string());
         self.register_mmio_device(identifier, slot, Arc::new(Mutex::new(device)))?;
         #[cfg(target_arch = "x86_64")]
