@@ -265,12 +265,14 @@ pub fn load_snapshot(
             .register_for_upf(&params.sock_file_path)
             .map_err(UserPageFault)?;
     }
+
     builder::build_microvm_from_snapshot(
         event_manager,
         microvm_state,
         guest_memory,
         track_dirty,
         seccomp_filter,
+        !params.enable_user_page_faults,
     )
     .map_err(BuildMicroVm)
 }

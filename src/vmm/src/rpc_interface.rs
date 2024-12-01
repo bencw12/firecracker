@@ -29,7 +29,6 @@ use crate::vmm_config::net::{
 use crate::vmm_config::snapshot::{CreateSnapshotParams, LoadSnapshotParams, SnapshotType};
 use crate::vmm_config::vsock::{VsockConfigError, VsockDeviceConfig};
 use arch::DeviceType;
-use devices::pseudo::FaultTracer;
 use devices::virtio::{Block, MmioTransport, Net, TYPE_BLOCK, TYPE_NET};
 use logger::{info, update_metric_with_elapsed_time, METRICS};
 use polly::event_manager::EventManager;
@@ -459,19 +458,6 @@ impl RuntimeApiController {
         persist::create_snapshot(&mut locked_vmm, create_params, VERSION_MAP.clone())
             .map_err(VmmActionError::CreateSnapshot)?;
 
-        // fault tracer
-        {
-            let dev = locked_vmm.get_bus_device(
-                DeviceType::FaultTracer,
-                &DeviceType::FaultTracer.to_string(),
-            );
-            if let Some(d) = dev {
-                if let Some(tracer) = d.lock().unwrap().as_mut_any().downcast_mut::<FaultTracer>() {
-                    tracer.do_mem_trace();
-                }
-            }
-        }
-
         match create_params.snapshot_type {
             SnapshotType::Full => {
                 let elapsed_time_us = update_metric_with_elapsed_time(
@@ -494,6 +480,7 @@ impl RuntimeApiController {
                 );
             }
         }
+
         Ok(())
     }
 

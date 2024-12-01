@@ -19,8 +19,10 @@ use crate::vmm_config::boot_source::BootConfig;
 use crate::vstate::{KvmContext, Vcpu, VcpuConfig, Vm};
 use crate::{device_manager, Error, Vmm, VmmEventsObserver};
 
+use arch::DeviceType;
 use arch::InitrdConfig;
 use devices::legacy::Serial;
+use devices::pseudo::FaultTracer;
 use devices::virtio::{Block, MmioTransport, Net, VirtioDevice, Vsock, VsockUnixBackend};
 use kernel::cmdline::Cmdline as KernelCmdline;
 use logger::warn;
@@ -371,6 +373,7 @@ pub fn build_microvm_from_snapshot(
     guest_memory: GuestMemoryMmap,
     track_dirty_pages: bool,
     seccomp_filter: BpfProgramRef,
+    do_mem_trace: bool,
 ) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
     use self::StartMicrovmError::*;
     let vcpu_count = u8::try_from(microvm_state.vcpu_states.len())
@@ -401,6 +404,19 @@ pub fn build_microvm_from_snapshot(
         MMIODeviceManager::restore(mmio_ctor_args, &microvm_state.device_states)
             .map_err(MicrovmStateError::RestoreDevices)
             .map_err(RestoreMicrovmState)?;
+
+    // fault tracer
+    if do_mem_trace {
+        let dev = vmm.get_bus_device(
+            DeviceType::FaultTracer,
+            &DeviceType::FaultTracer.to_string(),
+        );
+        if let Some(d) = dev {
+            if let Some(tracer) = d.lock().unwrap().as_mut_any().downcast_mut::<FaultTracer>() {
+                tracer.do_mem_trace();
+            }
+        }
+    }
 
     // Move vcpus to their own threads and start their state machine in the 'Paused' state.
     vmm.start_vcpus(vcpus, seccomp_filter)
