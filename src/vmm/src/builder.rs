@@ -25,7 +25,7 @@ use devices::legacy::Serial;
 use devices::pseudo::FaultTracer;
 use devices::virtio::{Block, MmioTransport, Net, VirtioDevice, Vsock, VsockUnixBackend};
 use kernel::cmdline::Cmdline as KernelCmdline;
-use logger::warn;
+use logger::{info, warn};
 use polly::event_manager::{Error as EventManagerError, EventManager, Subscriber};
 use seccomp::{BpfProgramRef, SeccompFilter};
 #[cfg(target_arch = "x86_64")]
@@ -208,8 +208,11 @@ fn create_vmm_and_vcpus(
 ) -> std::result::Result<(Vmm, Vec<Vcpu>), StartMicrovmError> {
     use self::StartMicrovmError::*;
 
+    let mut restore_start = TimestampUs::default();
     // Set up Kvm Vm and register memory regions.
     let mut vm = setup_kvm_vm(&guest_memory, track_dirty_pages)?;
+
+    timestamp("restore_trace: setup_kvm", &mut restore_start);
 
     // Vmm exit event.
     let exit_evt = EventFd::new(libc::EFD_NONBLOCK)
@@ -222,21 +225,27 @@ fn create_vmm_and_vcpus(
     let mmio_device_manager =
         MMIODeviceManager::new(arch::MMIO_MEM_START, (arch::IRQ_BASE, arch::IRQ_MAX));
 
+    timestamp("restore_trace: mmio_device_manager", &mut restore_start);
+
     let vcpus;
     // For x86_64 we need to create the interrupt controller before calling `KVM_CREATE_VCPUS`
     // while on aarch64 we need to do it the other way around.
     #[cfg(target_arch = "x86_64")]
     let pio_device_manager = {
         setup_interrupt_controller(&mut vm)?;
+	timestamp("restore_trace: setup_interrupt_controller", &mut restore_start);
+	
         vcpus = create_vcpus(&vm, vcpu_count, &exit_evt).map_err(Internal)?;
-
+	timestamp("restore_trace: create_vcpus", &mut restore_start);
+	
         // Serial device setup.
         let serial_device = setup_serial_device(
             event_manager,
             Box::new(SerialStdin::get()),
             Box::new(io::stdout()),
         )
-        .map_err(StartMicrovmError::Internal)?;
+            .map_err(StartMicrovmError::Internal)?;
+	timestamp("restore_trace: serial_device", &mut restore_start);
         // x86_64 uses the i8042 reset event as the Vmm exit event.
         let reset_evt = exit_evt
             .try_clone()
@@ -245,7 +254,7 @@ fn create_vmm_and_vcpus(
         create_pio_dev_manager_with_legacy_devices(&vm, serial_device, reset_evt)
             .map_err(Internal)?
     };
-
+    timestamp("restore_trace: create_pio_dev_manager", &mut restore_start);
     // On aarch64, the vCPUs need to be created (i.e call KVM_CREATE_VCPU) before setting up the
     // IRQ chip because the `KVM_CREATE_VCPU` ioctl will return error if the IRQCHIP
     // was already initialized.
@@ -362,6 +371,12 @@ pub fn build_microvm_for_boot(
     Ok(vmm)
 }
 
+fn timestamp(key: &str, start: &mut TimestampUs) {
+    let now = TimestampUs::default();
+    info!("{}: {:>6} us", key, now.time_us - start.time_us);
+    *start = TimestampUs::default();
+}
+
 /// Builds and starts a microVM based on the provided MicrovmState.
 ///
 /// An `Arc` reference of the built `Vmm` is also plugged in the `EventManager`, while another
@@ -376,6 +391,9 @@ pub fn build_microvm_from_snapshot(
     do_mem_trace: bool,
 ) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
     use self::StartMicrovmError::*;
+
+    let mut restore_start = TimestampUs::default();
+
     let vcpu_count = u8::try_from(microvm_state.vcpu_states.len())
         .map_err(|_| MicrovmStateError::InvalidInput)
         .map_err(RestoreMicrovmState)?;
@@ -388,11 +406,15 @@ pub fn build_microvm_from_snapshot(
         vcpu_count,
     )?;
 
+    timestamp("restore_trace: build_vmm", &mut restore_start);
+    
     // Restore kvm vm state.
     vmm.vm
         .restore_state(&microvm_state.vm_state)
         .map_err(MicrovmStateError::RestoreVmState)
         .map_err(RestoreMicrovmState)?;
+
+    timestamp("restore_trace: restore_kvm_state", &mut restore_start);
 
     // Restore devices states.
     let mmio_ctor_args = MMIODevManagerConstructorArgs {
@@ -403,7 +425,9 @@ pub fn build_microvm_from_snapshot(
     vmm.mmio_device_manager =
         MMIODeviceManager::restore(mmio_ctor_args, &microvm_state.device_states)
             .map_err(MicrovmStateError::RestoreDevices)
-            .map_err(RestoreMicrovmState)?;
+        .map_err(RestoreMicrovmState)?;
+
+    timestamp("restore_trace: restore_devices", &mut restore_start);
 
     // fault tracer
     if do_mem_trace {
@@ -422,20 +446,28 @@ pub fn build_microvm_from_snapshot(
     vmm.start_vcpus(vcpus, seccomp_filter)
         .map_err(StartMicrovmError::Internal)?;
 
+    timestamp("restore_trace: start_vcpus", &mut restore_start);
+
     // Restore vcpus kvm state.
     vmm.restore_vcpu_states(microvm_state.vcpu_states)
         .map_err(RestoreMicrovmState)?;
+
+    timestamp("restore_trace: restore_vcpu_state", &mut restore_start);
 
     let vmm = Arc::new(Mutex::new(vmm));
     event_manager
         .add_subscriber(vmm.clone())
         .map_err(StartMicrovmError::RegisterEvent)?;
 
+    timestamp("restore_trace: register_event", &mut restore_start);
+
     // Load seccomp filters for the VMM thread.
     // Keep this as the last step of the building process.
     SeccompFilter::apply(seccomp_filter.to_vec())
         .map_err(Error::SeccompFilters)
         .map_err(StartMicrovmError::Internal)?;
+    
+    timestamp("restore_trace: apply_seccomp", &mut restore_start);
 
     Ok(vmm)
 }

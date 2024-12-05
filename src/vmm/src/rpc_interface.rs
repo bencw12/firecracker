@@ -327,7 +327,7 @@ impl<'a> PrebootApiController<'a> {
 
         let elapsed_time_us =
             update_metric_with_elapsed_time(&METRICS.latencies_us.vmm_load_snapshot, load_start_us);
-        info!("'load snapshot' VMM action took {} us.", elapsed_time_us);
+        info!("'load snapshot' VMM action took TEST {} us.", elapsed_time_us);
 
         loaded_vmm
             .map(|vmm| self.built_vmm = Some(vmm))
