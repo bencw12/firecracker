@@ -207,12 +207,8 @@ fn create_vmm_and_vcpus(
     vcpu_count: u8,
 ) -> std::result::Result<(Vmm, Vec<Vcpu>), StartMicrovmError> {
     use self::StartMicrovmError::*;
-
-    let mut restore_start = TimestampUs::default();
     // Set up Kvm Vm and register memory regions.
     let mut vm = setup_kvm_vm(&guest_memory, track_dirty_pages)?;
-
-    timestamp("restore_trace: setup_kvm", &mut restore_start);
 
     // Vmm exit event.
     let exit_evt = EventFd::new(libc::EFD_NONBLOCK)
@@ -222,6 +218,8 @@ fn create_vmm_and_vcpus(
     // Instantiate the MMIO device manager.
     // 'mmio_base' address has to be an address which is protected by the kernel
     // and is architectural specific.
+    let mut restore_start = TimestampUs::default();
+
     let mmio_device_manager =
         MMIODeviceManager::new(arch::MMIO_MEM_START, (arch::IRQ_BASE, arch::IRQ_MAX));
 
@@ -233,19 +231,22 @@ fn create_vmm_and_vcpus(
     #[cfg(target_arch = "x86_64")]
     let pio_device_manager = {
         setup_interrupt_controller(&mut vm)?;
-	timestamp("restore_trace: setup_interrupt_controller", &mut restore_start);
-	
+        timestamp(
+            "restore_trace: setup_interrupt_controller",
+            &mut restore_start,
+        );
+
         vcpus = create_vcpus(&vm, vcpu_count, &exit_evt).map_err(Internal)?;
-	timestamp("restore_trace: create_vcpus", &mut restore_start);
-	
+        timestamp("restore_trace: create_vcpus", &mut restore_start);
+
         // Serial device setup.
         let serial_device = setup_serial_device(
             event_manager,
             Box::new(SerialStdin::get()),
             Box::new(io::stdout()),
         )
-            .map_err(StartMicrovmError::Internal)?;
-	timestamp("restore_trace: serial_device", &mut restore_start);
+        .map_err(StartMicrovmError::Internal)?;
+        timestamp("restore_trace: serial_device", &mut restore_start);
         // x86_64 uses the i8042 reset event as the Vmm exit event.
         let reset_evt = exit_evt
             .try_clone()
@@ -388,7 +389,6 @@ pub fn build_microvm_from_snapshot(
     guest_memory: GuestMemoryMmap,
     track_dirty_pages: bool,
     seccomp_filter: BpfProgramRef,
-    do_mem_trace: bool,
 ) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -407,7 +407,7 @@ pub fn build_microvm_from_snapshot(
     )?;
 
     timestamp("restore_trace: build_vmm", &mut restore_start);
-    
+
     // Restore kvm vm state.
     vmm.vm
         .restore_state(&microvm_state.vm_state)
@@ -425,20 +425,18 @@ pub fn build_microvm_from_snapshot(
     vmm.mmio_device_manager =
         MMIODeviceManager::restore(mmio_ctor_args, &microvm_state.device_states)
             .map_err(MicrovmStateError::RestoreDevices)
-        .map_err(RestoreMicrovmState)?;
+            .map_err(RestoreMicrovmState)?;
 
     timestamp("restore_trace: restore_devices", &mut restore_start);
 
-    // fault tracer
-    if do_mem_trace {
-        let dev = vmm.get_bus_device(
-            DeviceType::FaultTracer,
-            &DeviceType::FaultTracer.to_string(),
-        );
-        if let Some(d) = dev {
-            if let Some(tracer) = d.lock().unwrap().as_mut_any().downcast_mut::<FaultTracer>() {
-                tracer.do_mem_trace();
-            }
+    let dev = vmm.get_bus_device(
+        DeviceType::FaultTracer,
+        &DeviceType::FaultTracer.to_string(),
+    );
+
+    if let Some(d) = dev {
+        if let Some(tracer) = d.lock().unwrap().as_mut_any().downcast_mut::<FaultTracer>() {
+            tracer.do_mem_trace();
         }
     }
 
@@ -466,7 +464,7 @@ pub fn build_microvm_from_snapshot(
     SeccompFilter::apply(seccomp_filter.to_vec())
         .map_err(Error::SeccompFilters)
         .map_err(StartMicrovmError::Internal)?;
-    
+
     timestamp("restore_trace: apply_seccomp", &mut restore_start);
 
     Ok(vmm)
@@ -566,10 +564,18 @@ pub(crate) fn setup_kvm_vm(
     let kvm = KvmContext::new()
         .map_err(Error::KvmContext)
         .map_err(Internal)?;
+    let mut restore_start = TimestampUs::default();
     let mut vm = Vm::new(kvm.fd()).map_err(Error::Vm).map_err(Internal)?;
+    timestamp("restore_trace: create_vm", &mut restore_start);
+
     vm.memory_init(&guest_memory, kvm.max_memslots(), track_dirty_pages)
         .map_err(Error::Vm)
         .map_err(Internal)?;
+    timestamp(
+        "restore_trace: setup_user_memory_region",
+        &mut restore_start,
+    );
+
     Ok(vm)
 }
 

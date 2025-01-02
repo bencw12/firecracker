@@ -100,8 +100,8 @@ impl FaultTracer {
 
     pub fn do_mem_trace(&mut self) {
         let path = Path::new(MEM_TRACE_PATH);
+        // hacky: do the memory trace if MEM_TRACE_PATH doesn't exist
         if !path.exists() {
-            // create the mem trace file if it doesn't exists (the first run after cold boot)
             let file = File::create(path).unwrap();
             self.mem_trace = Some(file);
             self.interrupt(0).unwrap();
@@ -128,12 +128,16 @@ impl FaultTracer {
                 }
             }
 
-            let comm = String::from_utf8_lossy(&ent.comm.to_vec()).to_string();
             let kind = ent.kind;
             let addr = ent.addr;
 
+            if self.mem_trace.is_some() && kind == 2 {
+                writeln!(self.mem_trace.as_ref().unwrap(), "kaddr = 0x{:x}", addr,).unwrap();
+            }
+
             if self.mem_trace.is_some() && kind == 3 {
                 // write to mem trace
+                let comm = String::from_utf8_lossy(&ent.comm.to_vec()).to_string();
                 writeln!(
                     self.mem_trace.as_ref().unwrap(),
                     "addr = 0x{:x}, comm = {}",
@@ -145,12 +149,7 @@ impl FaultTracer {
                 writeln!(self.mem_trace.as_ref().unwrap(), "done",).unwrap();
             } else {
                 // write to fault trace
-                writeln!(
-                    self.log,
-                    "fault: type = {}, addr = 0x{:x}, comm = {}",
-                    kind, addr, comm
-                )
-                .unwrap();
+                writeln!(self.log, "fault: type = {}, addr = 0x{:x}", kind, addr).unwrap();
             }
         }
     }

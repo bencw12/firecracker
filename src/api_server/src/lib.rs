@@ -209,7 +209,7 @@ impl ApiServer {
             if let Some((metric, action)) = metric_with_action {
                 let elapsed_time_us =
                     update_metric_with_elapsed_time(metric, request_processing_start_us);
-                info!("'{}' API request took BCWH TEST {} us.", action, elapsed_time_us);
+                info!("'{}' API request took {} us.", action, elapsed_time_us);
             }
         }
         response

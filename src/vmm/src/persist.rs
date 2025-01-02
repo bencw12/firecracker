@@ -21,13 +21,13 @@ use crate::device_manager::persist::DeviceStates;
 use crate::memory_snapshot;
 use crate::memory_snapshot::{GuestMemoryState, SnapshotMemory};
 use crate::version_map::FC_VERSION_TO_SNAP_VERSION;
+use logger::info;
 use polly::event_manager::EventManager;
 use seccomp::BpfProgramRef;
 use snapshot::Snapshot;
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
 use vm_memory::{GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
-use logger::info;
 
 use crate::Vmm;
 
@@ -265,11 +265,11 @@ pub fn load_snapshot(
     let track_dirty = params.enable_diff_snapshots;
 
     let mut restore_start = TimestampUs::default();
-    
+
     let microvm_state = snapshot_state_from_file(&params.snapshot_path, version_map)?;
 
     timestamp("restore_trace: microvm_state", &mut restore_start);
-    
+
     let guest_memory = guest_memory_from_file(
         &params.mem_file_path,
         &microvm_state.memory_state,
@@ -277,14 +277,14 @@ pub fn load_snapshot(
     )?;
 
     timestamp("restore_trace: memory_state", &mut restore_start);
-    
+
     if params.enable_user_page_faults == true {
         guest_memory
             .register_for_upf(&params.sock_file_path)
             .map_err(UserPageFault)?;
     }
 
-    timestamp("restore_trace: register_upf", &mut restore_start);    
+    timestamp("restore_trace: register_upf", &mut restore_start);
 
     builder::build_microvm_from_snapshot(
         event_manager,
@@ -292,7 +292,6 @@ pub fn load_snapshot(
         guest_memory,
         track_dirty,
         seccomp_filter,
-        !params.enable_user_page_faults,
     )
     .map_err(BuildMicroVm)
 }
