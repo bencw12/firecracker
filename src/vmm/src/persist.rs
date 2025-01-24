@@ -292,6 +292,7 @@ pub fn load_snapshot(
         guest_memory,
         track_dirty,
         seccomp_filter,
+        params.enable_memory_trace,
     )
     .map_err(BuildMicroVm)
 }

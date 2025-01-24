@@ -50,6 +50,9 @@ pub struct LoadSnapshotParams {
     pub mem_file_path: PathBuf,
     /// Setting this flag enables user page faults handling by a different process.
     pub enable_user_page_faults: bool,
+    /// Setting this flag sends an interrupt to the guest to scan guest memory
+    /// and trace the provenance of pages by writing to the FaultTracer pseudo device
+    pub enable_memory_trace: bool,
     /// Path to the passfd socket.
     pub sock_file_path: PathBuf,
     /// Setting this flag will enable KVM dirty page tracking and will

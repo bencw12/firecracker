@@ -389,6 +389,7 @@ pub fn build_microvm_from_snapshot(
     guest_memory: GuestMemoryMmap,
     track_dirty_pages: bool,
     seccomp_filter: BpfProgramRef,
+    do_memory_trace: bool,
 ) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
     use self::StartMicrovmError::*;
 
@@ -434,9 +435,11 @@ pub fn build_microvm_from_snapshot(
         &DeviceType::FaultTracer.to_string(),
     );
 
-    if let Some(d) = dev {
-        if let Some(tracer) = d.lock().unwrap().as_mut_any().downcast_mut::<FaultTracer>() {
-            tracer.do_mem_trace();
+    if do_memory_trace {
+        if let Some(d) = dev {
+            if let Some(tracer) = d.lock().unwrap().as_mut_any().downcast_mut::<FaultTracer>() {
+                tracer.do_mem_trace();
+            }
         }
     }
 

@@ -2,10 +2,9 @@ use crate::BusDevice;
 use logger::info;
 use snapshot::Persist;
 use std::convert::TryInto;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::io::{ErrorKind, Write};
-use std::path::Path;
 use utils::eventfd::EventFd;
 use versionize::{VersionMap, Versionize, VersionizeError, VersionizeResult};
 use versionize_derive::Versionize;
@@ -99,13 +98,14 @@ impl FaultTracer {
     }
 
     pub fn do_mem_trace(&mut self) {
-        let path = Path::new(MEM_TRACE_PATH);
-        // hacky: do the memory trace if MEM_TRACE_PATH doesn't exist
-        if !path.exists() {
-            let file = File::create(path).unwrap();
-            self.mem_trace = Some(file);
-            self.interrupt(0).unwrap();
-        }
+        self.mem_trace = Some(OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(MEM_TRACE_PATH).unwrap());
+
+        info!("doing memory trace!");
+        self.interrupt(0).unwrap();
     }
 
     fn read_trace(&mut self, num_entries: usize) {
