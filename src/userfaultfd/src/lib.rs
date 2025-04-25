@@ -76,7 +76,9 @@ impl Uffd {
         unsafe {
             raw::register(self.as_raw_fd(), &mut register as *mut raw::uffdio_register)?;
         }
-        IoctlFlags::from_bits(register.ioctls).ok_or(Error::UnrecognizedIoctls(register.ioctls))
+
+        // Newer kernels might return more flags, just mask the extra ones off.
+        Ok(IoctlFlags::from_bits_truncate(register.ioctls))
     }
 
     /// Unregister a memory address range from the userfaultfd object.
