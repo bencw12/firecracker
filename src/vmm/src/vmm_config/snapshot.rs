@@ -53,6 +53,12 @@ pub struct LoadSnapshotParams {
     pub enable_diff_snapshots: bool,
     /// Setting this flag enables user page faults handling by a different process.
     pub enable_user_page_faults: bool,
+    /// Enable sched trace
+    pub sched_trace_pid: u16,
+    /// Enable mem trace
+    pub enable_mem_trace: bool,
+    /// Enable mem trace
+    pub enable_sched_trace: bool,
     /// Path to the passfd socket.
     pub sock_file_path: PathBuf,
     /// overlay path

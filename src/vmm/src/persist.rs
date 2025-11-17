@@ -13,9 +13,10 @@ use std::os::unix::prelude::AsRawFd;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use std::time::Instant;
 use libc::posix_fadvise;
 use libc::POSIX_FADV_RANDOM;
-use crate::builder::{self, StartMicrovmError};
+use crate::builder::{self, StartMicrovmError, setup_interrupt_controller};
 use crate::device_manager::persist::Error as DevicePersistError;
 use crate::vmm_config::snapshot::{CreateSnapshotParams, LoadSnapshotParams, SnapshotType};
 use crate::vstate::{self, VcpuState, VmState};
@@ -30,6 +31,7 @@ use snapshot::Snapshot;
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
 use vm_memory::{GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+use logger::info;
 
 use crate::Vmm;
 
@@ -259,18 +261,28 @@ pub fn load_snapshot(
     let track_dirty = params.enable_diff_snapshots;
     let microvm_state = snapshot_state_from_file(&params.snapshot_path, version_map)?;
     let guest_memory = guest_memory_from_file(&params.mem_file_path, &microvm_state.memory_state, params.enable_user_page_faults, &params.overlay_file_path, &params.overlay_regions, &params.ws_file_path, &params.ws_regions, params.load_ws, &params.fadvise)?;
+
+    let load_ws = Instant::now();
+
+    info!("start load working set");
     if params.enable_user_page_faults == true {
         guest_memory.register_for_upf(&params.sock_file_path).map_err(UserPageFault)?;
     }
     if params.load_ws {
-        guest_memory.load_working_set(&params.ws_regions);
+        guest_memory.load_working_set(&params.ws_regions).unwrap();
     }
+    info!("load working set took {}", load_ws.elapsed().as_micros());
+
     builder::build_microvm_from_snapshot(
         event_manager,
         microvm_state,
         guest_memory,
         track_dirty,
         seccomp_filter,
+        params.sched_trace_pid,
+        params.enable_mem_trace,
+        params.enable_sched_trace,
+        &params.ws_regions,
     )
     .map_err(BuildMicroVm)
 }

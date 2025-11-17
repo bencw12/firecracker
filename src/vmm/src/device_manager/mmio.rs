@@ -8,11 +8,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
+use logger::info;
 
 #[cfg(target_arch = "aarch64")]
 use arch::aarch64::DeviceInfoForFDT;
 use arch::DeviceType;
-use devices::pseudo::BootTimer;
+use devices::pseudo::{BootTimer, SchedTracer, MemTracer};
 use devices::{virtio::MmioTransport, BusDevice};
 use kernel::cmdline as kernel_cmdline;
 use kvm_ioctls::{IoEventAddress, VmFd};
@@ -118,7 +119,7 @@ impl MMIODeviceManager {
         Ok(slot)
     }
 
-    fn register_mmio_device(
+    pub fn register_mmio_device(
         &mut self,
         identifier: (DeviceType, String),
         slot: MMIODeviceInfo,
@@ -242,6 +243,104 @@ impl MMIODeviceManager {
 
         let identifier = (DeviceType::BootTimer, DeviceType::BootTimer.to_string());
         self.register_mmio_device(identifier, slot, Arc::new(Mutex::new(device)))
+    }
+
+    pub fn register_mmio_mem_tracer(
+        &mut self,
+        vm: &VmFd,
+        identifier: (DeviceType, String),
+        slot: MMIODeviceInfo,
+        device: Arc<Mutex<MemTracer>>
+    ) -> Result<()> {
+        info!("RESTORED slot = {:x?}", slot);
+        {
+            let locked_dev = device.lock().unwrap();
+            vm.register_irqfd(locked_dev.interrupt_evt(), slot.irqs[0])
+              .map_err(Error::RegisterIrqFd)?;
+        }
+
+        self.bus
+            .insert(device, slot.addr, slot.len)
+            .map_err(Error::BusError)?;
+        self.id_to_dev_info.insert(identifier, slot);
+        info!("AFTER");
+        Ok(())
+    }
+
+    pub fn register_mmio_sched_tracer(
+        &mut self,
+        vm: &VmFd,
+        identifier: (DeviceType, String),
+        slot: MMIODeviceInfo,
+        device: Arc<Mutex<SchedTracer>>
+    ) -> Result<()> {
+        info!("RESTORED slot = {:x?}", slot);
+        {
+            let locked_dev = device.lock().unwrap();
+            vm.register_irqfd(locked_dev.interrupt_evt(), slot.irqs[0])
+                .map_err(Error::RegisterIrqFd)?;
+        }
+
+        self.bus
+            .insert(device, slot.addr, slot.len)
+            .map_err(Error::BusError)?;
+        self.id_to_dev_info.insert(identifier, slot);
+        info!("AFTER");
+        Ok(())
+    }
+
+    /// Create and register a mem trace device.
+    pub fn register_new_mmio_mem_tracer(
+        &mut self,
+        vm: &VmFd,
+        device: Arc<Mutex<MemTracer>>,
+        _cmdline: &mut kernel_cmdline::Cmdline,
+    ) -> Result<()> {
+        let mmio_slot = self.allocate_new_slot(1)?;
+        info!("NEW slot = {:x?}", mmio_slot);
+        {
+            let locked_device = device.lock().unwrap();
+            vm.register_irqfd(locked_device.interrupt_evt(), mmio_slot.irqs[0])
+              .map_err(Error::RegisterIrqFd)?;
+        }
+        let identifier = (DeviceType::MemTracer, DeviceType::MemTracer.to_string());
+        self.register_mmio_device(identifier, mmio_slot.clone(), device)?;
+        #[cfg(target_arch = "x86_64")]
+        _cmdline.insert(
+            "mem_tracer",
+            &format!("{}K@0x{:08x}:{}",
+                     mmio_slot.len / 1024,
+                     mmio_slot.addr,
+                     mmio_slot.irqs[0]))
+                .unwrap();
+        Ok(())
+    }
+
+    /// Create and register a sched trace device.
+    pub fn register_new_mmio_sched_tracer(
+        &mut self,
+        vm: &VmFd,
+        device: Arc<Mutex<SchedTracer>>,
+        _cmdline: &mut kernel_cmdline::Cmdline,
+    ) -> Result<()> {
+        let mmio_slot = self.allocate_new_slot(1)?;
+        info!("NEW slot = {:x?}", mmio_slot);
+        {
+            let locked_device = device.lock().unwrap();
+            vm.register_irqfd(locked_device.interrupt_evt(), mmio_slot.irqs[0])
+              .map_err(Error::RegisterIrqFd)?;
+        }
+        let identifier = (DeviceType::SchedTracer, DeviceType::SchedTracer.to_string());
+        self.register_mmio_device(identifier, mmio_slot.clone(), device)?;
+        #[cfg(target_arch = "x86_64")]
+        _cmdline.insert(
+            "sched_tracer",
+            &format!("{}K@0x{:08x}:{}",
+                     mmio_slot.len / 1024,
+                     mmio_slot.addr,
+                     mmio_slot.irqs[0]))
+                .unwrap();
+        Ok(())
     }
 
     /// Gets the information of the devices registered up to some point in time.

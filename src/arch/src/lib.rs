@@ -43,6 +43,10 @@ pub enum DeviceType {
     RTC,
     /// Device Type: BootTimer.
     BootTimer,
+    /// Device Type: SchedTracer.
+    SchedTracer,
+    /// Device Type: MemTracer.
+    MemTracer,
 }
 
 /// Type for passing information about the initrd in the guest memory.

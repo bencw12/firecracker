@@ -19,12 +19,14 @@ use crate::vmm_config::boot_source::BootConfig;
 use crate::vstate::{KvmContext, Vcpu, VcpuConfig, Vm};
 use crate::{device_manager, Error, Vmm, VmmEventsObserver};
 
-use arch::InitrdConfig;
+use arch::{InitrdConfig, DeviceType};
 use devices::legacy::Serial;
+use devices::pseudo::{SchedTracer, MemTracer};
 use devices::virtio::{Block, MmioTransport, Net, VirtioDevice, Vsock, VsockUnixBackend};
 use kernel::cmdline::Cmdline as KernelCmdline;
-use logger::warn;
-use polly::event_manager::{Error as EventManagerError, EventManager, Subscriber};
+use libc::reboot;
+use logger::{info, warn};
+use polly::event_manager::{Error as EventManagerError, EventManager, Subscriber, self};
 use seccomp::{BpfProgramRef, SeccompFilter};
 #[cfg(target_arch = "x86_64")]
 use snapshot::Persist;
@@ -307,6 +309,8 @@ pub fn build_microvm_for_boot(
         vcpu_config.vcpu_count,
     )?;
 
+    attach_sched_tracer_device(&mut vmm, &mut boot_cmdline, 1).unwrap();
+    attach_mem_tracer_device(&mut vmm, &mut boot_cmdline).unwrap();
     attach_boot_timer_device(&mut vmm, request_ts)?;
 
     attach_block_devices(
@@ -370,12 +374,20 @@ pub fn build_microvm_from_snapshot(
     guest_memory: GuestMemoryMmap,
     track_dirty_pages: bool,
     seccomp_filter: BpfProgramRef,
+    sched_trace_pid: u16,
+    do_mem_trace: bool,
+    do_sched_trace: bool,
+    ws_regions: &Vec<Vec<i64>>,
 ) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
+    use std::time::Instant;
+
     use self::StartMicrovmError::*;
     let vcpu_count = u8::try_from(microvm_state.vcpu_states.len())
         .map_err(|_| MicrovmStateError::InvalidInput)
         .map_err(RestoreMicrovmState)?;
 
+    info!("create vmm");
+    let create_vmm = Instant::now();
     // Build Vmm.
     let (mut vmm, vcpus) = create_vmm_and_vcpus(
         event_manager,
@@ -383,13 +395,16 @@ pub fn build_microvm_from_snapshot(
         track_dirty_pages,
         vcpu_count,
     )?;
-
+    info!("create vmm took {}", create_vmm.elapsed().as_micros());
     // Restore kvm vm state.
+
+    let restore_kvm = Instant::now();
     vmm.vm
         .restore_state(&microvm_state.vm_state)
         .map_err(MicrovmStateError::RestoreVmState)
         .map_err(RestoreMicrovmState)?;
-
+    info!("restore kvm took {}", restore_kvm.elapsed().as_micros());
+    let restore_devices = Instant::now();
     // Restore devices states.
     let mmio_ctor_args = MMIODevManagerConstructorArgs {
         mem: guest_memory,
@@ -400,26 +415,59 @@ pub fn build_microvm_from_snapshot(
         MMIODeviceManager::restore(mmio_ctor_args, &microvm_state.device_states)
             .map_err(MicrovmStateError::RestoreDevices)
             .map_err(RestoreMicrovmState)?;
-
+    info!("restore devices took {}", restore_devices.elapsed().as_micros());
     // Move vcpus to their own threads and start their state machine in the 'Paused' state.
+    let start_vcpus = Instant::now();
     vmm.start_vcpus(vcpus, seccomp_filter)
         .map_err(StartMicrovmError::Internal)?;
+    info!("start vcpus took {}", start_vcpus.elapsed().as_micros());
 
     // Restore vcpus kvm state.
+    let restore_vcpu_state = Instant::now();
     vmm.restore_vcpu_states(microvm_state.vcpu_states)
         .map_err(RestoreMicrovmState)?;
+    info!("restore vcpus took {}", restore_vcpu_state.elapsed().as_micros());
+    let dev = vmm.get_bus_device(
+        DeviceType::SchedTracer,
+        &DeviceType::SchedTracer.to_string(),
+    );
+
+    if do_sched_trace {
+        if let Some(d) = dev {
+            if let Some(tracer) =
+                d.lock().unwrap().as_mut_any().downcast_mut::<SchedTracer>() {
+                    tracer.start_trace(sched_trace_pid);
+                }
+        }
+        info!("restore sched tracer done");
+    }
+    if do_mem_trace {
+        let dev = vmm.get_bus_device(
+            DeviceType::MemTracer,
+            &DeviceType::MemTracer.to_string(),
+        );
+
+        if let Some(d) = dev {
+            if let Some(tracer) =
+                d.lock().unwrap().as_mut_any().downcast_mut::<MemTracer>() {
+                    tracer.start_trace(ws_regions);
+                }
+        }
+        info!("restore mem tracer done");
+    }
 
     let vmm = Arc::new(Mutex::new(vmm));
     event_manager
         .add_subscriber(vmm.clone())
         .map_err(StartMicrovmError::RegisterEvent)?;
 
+    let apply_seccomp = Instant::now();
     // Load seccomp filters for the VMM thread.
     // Keep this as the last step of the building process.
     SeccompFilter::apply(seccomp_filter.to_vec())
         .map_err(Error::SeccompFilters)
         .map_err(StartMicrovmError::Internal)?;
-
+    info!("install seccomp took {}", apply_seccomp.elapsed().as_micros());
     Ok(vmm)
 }
 
@@ -681,6 +729,42 @@ pub fn configure_system_for_boot(
     }
     Ok(())
 }
+
+pub(crate) fn attach_mem_tracer_device(
+    vmm: &mut Vmm,
+    cmdline: &mut KernelCmdline,
+) -> std::result::Result<(), StartMicrovmError> {
+    use self::StartMicrovmError::*;
+
+    let device = MemTracer::new(vmm.guest_memory.clone());
+    vmm.mmio_device_manager
+       .register_new_mmio_mem_tracer(
+           vmm.vm.fd(),
+           Arc::new(Mutex::new(device)),
+           cmdline)
+       .map_err(RegisterMmioDevice)?;
+
+    Ok(())
+}
+
+pub(crate) fn attach_sched_tracer_device(
+    vmm: &mut Vmm,
+    cmdline: &mut KernelCmdline,
+    pid: u16,
+) -> std::result::Result<(), StartMicrovmError> {
+    use self::StartMicrovmError::*;
+
+    let device = SchedTracer::new(vmm.guest_memory.clone(), pid);
+    vmm.mmio_device_manager
+       .register_new_mmio_sched_tracer(
+           vmm.vm.fd(),
+           Arc::new(Mutex::new(device)),
+           cmdline)
+       .map_err(RegisterMmioDevice)?;
+
+    Ok(())
+}
+
 
 /// Attaches a VirtioDevice device to the device manager and event manager.
 fn attach_virtio_device<T: 'static + VirtioDevice + Subscriber>(

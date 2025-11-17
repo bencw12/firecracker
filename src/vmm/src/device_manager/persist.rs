@@ -12,8 +12,9 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use super::mmio::*;
-
-use devices::pseudo::BootTimer;
+use logger::info;
+use arch::DeviceType;
+use devices::pseudo::{BootTimer, SchedTracer, SchedTracerState, SchedTracerConstructorArgs, MemTracer, MemTracerState, MemTracerConstructorArgs};
 use devices::virtio::block::persist::{BlockConstructorArgs, BlockState};
 use devices::virtio::block::Block;
 use devices::virtio::net::persist::{Error as NetError, NetConstructorArgs, NetState};
@@ -40,6 +41,26 @@ pub enum Error {
     Net(NetError),
     Vsock(VsockError),
     VsockUnixBackend(VsockUnixBackendError),
+}
+
+#[derive(Versionize)]
+pub struct ConnectedSchedTracerState {
+    /// Device identifier
+    pub device_id: String,
+    /// Device state
+    pub device_state: SchedTracerState,
+    /// VmmResources
+    pub mmio_slot: MMIODeviceInfo,
+}
+
+#[derive(Versionize)]
+pub struct ConnectedMemTracerState {
+    /// Device identifier
+    pub device_id: String,
+    /// Device state
+    pub device_state: MemTracerState,
+    /// VmmResources
+    pub mmio_slot: MMIODeviceInfo,
 }
 
 #[derive(Versionize)]
@@ -90,6 +111,10 @@ pub struct DeviceStates {
     pub net_devices: Vec<ConnectedNetState>,
     /// Vsock device state.
     pub vsock_device: Option<ConnectedVsockState>,
+    /// Sched Tracer device state.
+    pub sched_tracer_device: Option<ConnectedSchedTracerState>,
+    /// Mem Tracer device state.
+    pub mem_tracer_device: Option<ConnectedMemTracerState>,
 }
 
 pub struct MMIODevManagerConstructorArgs<'a> {
@@ -108,6 +133,8 @@ impl<'a> Persist<'a> for MMIODeviceManager {
             block_devices: Vec::new(),
             net_devices: Vec::new(),
             vsock_device: None,
+            sched_tracer_device: None,
+            mem_tracer_device: None,
         };
         for ((device_type, device_id), device_info) in self.get_device_info().iter() {
             let bus_device = self
@@ -119,6 +146,36 @@ impl<'a> Persist<'a> for MMIODeviceManager {
 
             if let Some(boot_timer) = bus_device.as_any().downcast_ref::<BootTimer>() {
                 // No need to save BootTimer state.
+                continue;
+            }
+
+            if let Some(sched_tracer) = bus_device
+                .as_any()
+                .downcast_ref::<SchedTracer>()
+            {
+                let state = sched_tracer.save();
+                states.sched_tracer_device = Some(
+                    ConnectedSchedTracerState {
+                        device_id: device_id.clone(),
+                        device_state: state,
+                        mmio_slot: device_info.clone(),
+                    }
+                );
+                continue;
+            }
+
+            if let Some(mem_tracer) = bus_device
+                .as_any()
+                .downcast_ref::<MemTracer>()
+            {
+                let state = mem_tracer.save();
+                states.mem_tracer_device = Some(
+                    ConnectedMemTracerState {
+                        device_id: device_id.clone(),
+                        device_state: state,
+                        mmio_slot: device_info.clone(),
+                    }
+                );
                 continue;
             }
 
@@ -188,10 +245,46 @@ impl<'a> Persist<'a> for MMIODeviceManager {
         let vm = constructor_args.vm;
         let event_manager = constructor_args.event_manager;
 
-        let boot_timer = BootTimer::new(TimestampUs::default());
-        dev_manager
-            .register_new_mmio_boot_timer(boot_timer)
-            .map_err(Error::DeviceManager)?;
+        // let boot_timer = BootTimer::new(TimestampUs::default());
+        // dev_manager
+        //     .register_new_mmio_boot_timer(boot_timer)
+        //     .map_err(Error::DeviceManager)?;
+
+        if let Some(sched_tracer_state) = &state.sched_tracer_device {
+            info!("RESTORING SCHED TRACER");
+            let device_id = sched_tracer_state.device_id.clone();
+            let tracer_dev =
+                SchedTracer::restore(SchedTracerConstructorArgs { mem: mem.clone() },
+                                     &sched_tracer_state.device_state).unwrap();
+            let sched_tracer = Arc::new(Mutex::new(tracer_dev));
+
+            dev_manager
+                .register_mmio_sched_tracer(
+                    vm,
+                    (DeviceType::SchedTracer, device_id),
+                    sched_tracer_state.mmio_slot.clone(),
+                    sched_tracer,
+                )
+                .map_err(Error::DeviceManager)?;
+        }
+
+        if let Some(mem_tracer_state) = &state.mem_tracer_device {
+            info!("RESTORING MEM TRACER");
+            let device_id = mem_tracer_state.device_id.clone();
+            let tracer_dev =
+                MemTracer::restore(MemTracerConstructorArgs { mem: mem.clone() },
+                                     &mem_tracer_state.device_state).unwrap();
+            let mem_tracer = Arc::new(Mutex::new(tracer_dev));
+
+            dev_manager
+                .register_mmio_mem_tracer(
+                    vm,
+                    (DeviceType::MemTracer, device_id),
+                    mem_tracer_state.mmio_slot.clone(),
+                    mem_tracer,
+                )
+                .map_err(Error::DeviceManager)?;
+        }
 
         for block_state in &state.block_devices {
             let device = Arc::new(Mutex::new(

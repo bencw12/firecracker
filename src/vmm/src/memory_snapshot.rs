@@ -16,6 +16,7 @@ use std::thread;
 
 use libc::printf;
 use logger::info;
+use utils::time::TimestampUs;
 // for userfaultfd
 use std::path::PathBuf;
 use std::os::unix::io::AsRawFd;
@@ -202,6 +203,8 @@ impl SnapshotMemory for GuestMemoryMmap {
         let page_size = sysconf::page::pagesize() as i64;
         let mut mmap_regions = Vec::new();
         assert!(state.regions.len() == 1); // for now only support one region
+        info!("start mmaps");
+        let now: TimestampUs = Default::default();
         for region in state.regions.iter() {
             assert!(region.offset == 0);
 
@@ -258,6 +261,8 @@ impl SnapshotMemory for GuestMemoryMmap {
             }
             mmap_regions.push(mmap_region);
         }
+        let end: TimestampUs = Default::default();
+        info!("done mmaps in {}us", end.time_us - now.time_us);
     
         // if load_ws {
         //         let start = addr.clone() as u64;

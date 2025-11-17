@@ -8,6 +8,8 @@ use arch_gen::x86::msr_index::*;
 use kvm_bindings::{kvm_msr_entry, MsrList, Msrs};
 use kvm_ioctls::{Kvm, VcpuFd};
 
+use core::arch::x86_64::_rdtsc;
+
 #[derive(Debug)]
 /// MSR related errors.
 pub enum Error {
@@ -190,6 +192,8 @@ fn create_boot_msr_entries() -> Vec<kvm_msr_entry> {
         ..Default::default()
     };
 
+    // info!("TSC @ MSR = {}", unsafe { _rdtsc() });
+
     vec![
         msr_entry_default(MSR_IA32_SYSENTER_CS),
         msr_entry_default(MSR_IA32_SYSENTER_ESP),
@@ -201,7 +205,12 @@ fn create_boot_msr_entries() -> Vec<kvm_msr_entry> {
         msr_entry_default(MSR_SYSCALL_MASK),
         msr_entry_default(MSR_LSTAR),
         // end of x86_64 specific code
-        msr_entry_default(MSR_IA32_TSC),
+        // msr_entry_default(MSR_IA32_TSC),
+        kvm_msr_entry {
+            index: MSR_IA32_TSC,
+            data: unsafe { _rdtsc() },
+            ..Default::default()
+        },
         kvm_msr_entry {
             index: MSR_IA32_MISC_ENABLE,
             data: u64::from(MSR_IA32_MISC_ENABLE_FAST_STRING),

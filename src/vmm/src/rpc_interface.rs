@@ -29,10 +29,13 @@ use crate::vmm_config::net::{
 use crate::vmm_config::snapshot::{CreateSnapshotParams, LoadSnapshotParams, SnapshotType};
 use crate::vmm_config::vsock::{VsockConfigError, VsockDeviceConfig};
 use arch::DeviceType;
+use devices::pseudo::SchedTracer;
 use devices::virtio::{Block, MmioTransport, Net, TYPE_BLOCK, TYPE_NET};
 use logger::{info, update_metric_with_elapsed_time, METRICS};
 use polly::event_manager::EventManager;
 use seccomp::BpfProgram;
+
+use core::arch::x86_64::_rdtsc;
 
 /// This enum represents the public interface of the VMM. Each action contains various
 /// bits of information (ids, paths, etc.).
@@ -414,11 +417,15 @@ impl RuntimeApiController {
     pub fn resume(&mut self) -> ActionResult {
         let resume_start_us = utils::time::get_time_us(utils::time::ClockType::Monotonic);
 
+        info!("$BCWH {} start_resume_vm", unsafe{ _rdtsc() });
+
         self.vmm
             .lock()
             .expect("Poisoned lock")
             .resume_vcpus()
             .map_err(VmmActionError::InternalVmm)?;
+
+        info!("$BCWH {} end_resume_vm", unsafe{ _rdtsc() });
 
         let elapsed_time_us =
             update_metric_with_elapsed_time(&METRICS.latencies_us.vmm_resume_vm, resume_start_us);
@@ -433,6 +440,21 @@ impl RuntimeApiController {
     /// getting the dirty pages, and then we'll have the metrics flushing logic entirely on the outside.
     fn flush_metrics(&mut self) -> ActionResult {
         // FIXME: we're losing the bool saying whether metrics were actually written.
+        // BCWH THIS IS A HACK
+        info!("BCWH METRICS");
+        let vmm = self.vmm.lock().expect("Poisoned lock");
+        let dev =  vmm.get_bus_device(
+            DeviceType::SchedTracer,
+            &DeviceType::SchedTracer.to_string(),
+        );
+
+        if let Some(d) = dev {
+            if let Some(tracer) =
+                d.lock().unwrap().as_mut_any().downcast_mut::<SchedTracer>() {
+                    tracer.end_trace(1);
+                }
+        }
+
         METRICS
             .write()
             .map(|_| ())
