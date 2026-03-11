@@ -205,6 +205,10 @@ impl SnapshotMemory for GuestMemoryMmap {
         assert!(state.regions.len() == 1); // for now only support one region
         info!("start mmaps");
         let now: TimestampUs = Default::default();
+
+        let mut ws_len = 0;
+        let mut non_zero_len = 0;
+
         for region in state.regions.iter() {
             assert!(region.offset == 0);
 
@@ -234,6 +238,10 @@ impl SnapshotMemory for GuestMemoryMmap {
                 let file = File::open(overlay_file_path).map_err(Error::FileHandle)?;
                 let fd = file.as_raw_fd();
                 for (off, len) in overlay_regions {
+
+                    // page size
+                    non_zero_len += *len;
+
                     let offset = *off * page_size;
                     let length = *len * page_size;
                     let ret = unsafe { libc::mmap((addr.offset(offset as isize)) as *mut u8 as _, length as usize, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_FIXED | libc::MAP_NORESERVE | libc::MAP_PRIVATE, fd, offset as libc::off_t)};
@@ -251,6 +259,9 @@ impl SnapshotMemory for GuestMemoryMmap {
                 for region in ws_regions {
                     let off = region[0] * page_size;
                     let len = region[1] * page_size;
+                    // page size
+                    ws_len += region[1];
+
                     let fd = file.as_raw_fd();
                     let ret = unsafe { libc::mmap((addr.offset(off as isize)) as *mut u8 as _, len as usize, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_FIXED | libc::MAP_NORESERVE | libc::MAP_PRIVATE, fd, (file_off) as libc::off_t) };
                     if ret == libc::MAP_FAILED {
@@ -263,7 +274,7 @@ impl SnapshotMemory for GuestMemoryMmap {
         }
         let end: TimestampUs = Default::default();
         info!("done mmaps in {}us", end.time_us - now.time_us);
-    
+        info!("ws len = {}, overlay len = {}", ws_len, non_zero_len);
         // if load_ws {
         //         let start = addr.clone() as u64;
         //         let new_ws_regions = ws_regions.clone();
