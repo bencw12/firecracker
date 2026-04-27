@@ -19,14 +19,14 @@ use crate::vmm_config::boot_source::BootConfig;
 use crate::vstate::{KvmContext, Vcpu, VcpuConfig, Vm};
 use crate::{device_manager, Error, Vmm, VmmEventsObserver};
 
-use arch::{InitrdConfig, DeviceType};
+use arch::{DeviceType, InitrdConfig};
 use devices::legacy::Serial;
-use devices::pseudo::{SchedTracer, MemTracer};
+use devices::pseudo::{MemTracer, SchedTracer};
 use devices::virtio::{Block, MmioTransport, Net, VirtioDevice, Vsock, VsockUnixBackend};
 use kernel::cmdline::Cmdline as KernelCmdline;
 use libc::reboot;
 use logger::{info, warn};
-use polly::event_manager::{Error as EventManagerError, EventManager, Subscriber, self};
+use polly::event_manager::{self, Error as EventManagerError, EventManager, Subscriber};
 use seccomp::{BpfProgramRef, SeccompFilter};
 #[cfg(target_arch = "x86_64")]
 use snapshot::Persist;
@@ -374,9 +374,6 @@ pub fn build_microvm_from_snapshot(
     guest_memory: GuestMemoryMmap,
     track_dirty_pages: bool,
     seccomp_filter: BpfProgramRef,
-    sched_trace_pid: u16,
-    do_mem_trace: bool,
-    do_sched_trace: bool,
     ws_regions: &Vec<Vec<i64>>,
 ) -> std::result::Result<Arc<Mutex<Vmm>>, StartMicrovmError> {
     use std::time::Instant;
@@ -415,7 +412,10 @@ pub fn build_microvm_from_snapshot(
         MMIODeviceManager::restore(mmio_ctor_args, &microvm_state.device_states)
             .map_err(MicrovmStateError::RestoreDevices)
             .map_err(RestoreMicrovmState)?;
-    info!("restore devices took {}", restore_devices.elapsed().as_micros());
+    info!(
+        "restore devices took {}",
+        restore_devices.elapsed().as_micros()
+    );
     // Move vcpus to their own threads and start their state machine in the 'Paused' state.
     let start_vcpus = Instant::now();
     vmm.start_vcpus(vcpus, seccomp_filter)
@@ -426,35 +426,10 @@ pub fn build_microvm_from_snapshot(
     let restore_vcpu_state = Instant::now();
     vmm.restore_vcpu_states(microvm_state.vcpu_states)
         .map_err(RestoreMicrovmState)?;
-    info!("restore vcpus took {}", restore_vcpu_state.elapsed().as_micros());
-    let dev = vmm.get_bus_device(
-        DeviceType::SchedTracer,
-        &DeviceType::SchedTracer.to_string(),
+    info!(
+        "restore vcpus took {}",
+        restore_vcpu_state.elapsed().as_micros()
     );
-
-    if do_sched_trace {
-        if let Some(d) = dev {
-            if let Some(tracer) =
-                d.lock().unwrap().as_mut_any().downcast_mut::<SchedTracer>() {
-                    tracer.start_trace(sched_trace_pid);
-                }
-        }
-        info!("restore sched tracer done");
-    }
-    if do_mem_trace {
-        let dev = vmm.get_bus_device(
-            DeviceType::MemTracer,
-            &DeviceType::MemTracer.to_string(),
-        );
-
-        if let Some(d) = dev {
-            if let Some(tracer) =
-                d.lock().unwrap().as_mut_any().downcast_mut::<MemTracer>() {
-                    tracer.start_trace(ws_regions);
-                }
-        }
-        info!("restore mem tracer done");
-    }
 
     let vmm = Arc::new(Mutex::new(vmm));
     event_manager
@@ -467,7 +442,10 @@ pub fn build_microvm_from_snapshot(
     SeccompFilter::apply(seccomp_filter.to_vec())
         .map_err(Error::SeccompFilters)
         .map_err(StartMicrovmError::Internal)?;
-    info!("install seccomp took {}", apply_seccomp.elapsed().as_micros());
+    info!(
+        "install seccomp took {}",
+        apply_seccomp.elapsed().as_micros()
+    );
     Ok(vmm)
 }
 
@@ -738,11 +716,8 @@ pub(crate) fn attach_mem_tracer_device(
 
     let device = MemTracer::new(vmm.guest_memory.clone());
     vmm.mmio_device_manager
-       .register_new_mmio_mem_tracer(
-           vmm.vm.fd(),
-           Arc::new(Mutex::new(device)),
-           cmdline)
-       .map_err(RegisterMmioDevice)?;
+        .register_new_mmio_mem_tracer(vmm.vm.fd(), Arc::new(Mutex::new(device)), cmdline)
+        .map_err(RegisterMmioDevice)?;
 
     Ok(())
 }
@@ -756,15 +731,11 @@ pub(crate) fn attach_sched_tracer_device(
 
     let device = SchedTracer::new(vmm.guest_memory.clone(), pid);
     vmm.mmio_device_manager
-       .register_new_mmio_sched_tracer(
-           vmm.vm.fd(),
-           Arc::new(Mutex::new(device)),
-           cmdline)
-       .map_err(RegisterMmioDevice)?;
+        .register_new_mmio_sched_tracer(vmm.vm.fd(), Arc::new(Mutex::new(device)), cmdline)
+        .map_err(RegisterMmioDevice)?;
 
     Ok(())
 }
-
 
 /// Attaches a VirtioDevice device to the device manager and event manager.
 fn attach_virtio_device<T: 'static + VirtioDevice + Subscriber>(
