@@ -309,8 +309,8 @@ pub fn build_microvm_for_boot(
         vcpu_config.vcpu_count,
     )?;
 
-    attach_sched_tracer_device(&mut vmm, &mut boot_cmdline, 1).unwrap();
-    attach_mem_tracer_device(&mut vmm, &mut boot_cmdline).unwrap();
+    // attach_sched_tracer_device(&mut vmm, &mut boot_cmdline, 1).unwrap();
+    // attach_mem_tracer_device(&mut vmm, &mut boot_cmdline).unwrap();
     attach_boot_timer_device(&mut vmm, request_ts)?;
 
     attach_block_devices(
